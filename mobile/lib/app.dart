@@ -36,7 +36,8 @@ final _router = GoRouter(
     final container = ProviderScope.containerOf(context);
     final isLoggedIn = container.read(isAuthenticatedProvider);
     final onAuthPage = state.matchedLocation == '/login';
-    if (!isLoggedIn && !onAuthPage) return '/login';
+    final onPublicPage = onAuthPage || state.matchedLocation == '/settings';
+    if (!isLoggedIn && !onPublicPage) return '/login';
     if (isLoggedIn && onAuthPage) return '/home';
     return null;
   },
