@@ -1,3 +1,4 @@
+import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/api/api_client.dart';
 import '../../core/api/endpoints.dart';
@@ -34,7 +35,9 @@ class AuthState {
 }
 
 class AuthNotifier extends StateNotifier<AuthState> {
-  AuthNotifier() : super(const AuthState()) {
+  final Dio _dio;
+
+  AuthNotifier({Dio? dio}) : _dio = dio ?? buildDio(), super(const AuthState()) {
     _restoreSession();
   }
 
@@ -48,8 +51,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
   Future<void> login(String email, String password) async {
     state = state.copyWith(isLoading: true, error: null);
     try {
-      final dio = buildDio();
-      final response = await dio.post(
+      final response = await _dio.post(
         Endpoints.login,
         data: {'email': email, 'password': password},
       );

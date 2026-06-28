@@ -6,7 +6,9 @@ import '../../core/models/bundle.dart';
 import '../../core/storage/hive_service.dart';
 
 class SyncService {
-  final Dio _dio = buildDio();
+  final Dio _dio;
+
+  SyncService({Dio? dio}) : _dio = dio ?? buildDio();
 
   /// Sync all pending (status = 'pending' | 'failed') bundles to the backend.
   /// Each bundle:
