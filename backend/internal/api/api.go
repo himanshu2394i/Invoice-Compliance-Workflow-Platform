@@ -492,19 +492,6 @@ func (s *Server) handleListEntities(w http.ResponseWriter, r *http.Request) {
 // validate/approve/reject states are an AP concept (decide whether to pay a
 // vendor) that doesn't apply here. A ledger invoice just needs to exist on
 // file; the batch scans (internal/ledgerscan) and the per-document
-// LedgerDocumentWorkflow (triggered separately by
-// handleUploadSupportingDocument) are this flow's only Temporal usage.
-type LedgerUploadFields struct {
-	EntityID      string
-	BuyerID       string
-	InvoiceNumber string
-	InvoiceSeries string
-	InvoiceDate   string
-	GrossAmount   float64
-	TaxAmount     float64
-	Currency      string
-}
-
 func (s *Server) handleUploadLedgerInvoice(w http.ResponseWriter, r *http.Request) {
 	claims := claimsFromContext(r.Context())
 	tenantID := claims.OrganizationID
@@ -521,14 +508,61 @@ func (s *Server) handleUploadLedgerInvoice(w http.ResponseWriter, r *http.Reques
 	defer file.Close()
 
 	invoiceNumber := strings.TrimSpace(r.FormValue("invoice_number"))
-	entityID := strings.TrimSpace(r.FormValue("entity_id"))
-	buyerID := strings.TrimSpace(r.FormValue("buyer_id"))
-	if invoiceNumber == "" || entityID == "" || buyerID == "" {
-		writeError(w, http.StatusBadRequest, "invoice_number, entity_id, and buyer_id are required")
+	if invoiceNumber == "" {
+		writeError(w, http.StatusBadRequest, "invoice_number is required")
 		return
 	}
+
+	// Resolve entity: entity_id > entity_gstin > first entity (mobile fallback)
+	entityID := strings.TrimSpace(r.FormValue("entity_id"))
+	if entityID == "" {
+		if gstin := strings.TrimSpace(r.FormValue("entity_gstin")); gstin != "" {
+			if ent, err := s.Repo.GetEntityByGSTIN(r.Context(), tenantID, gstin); err == nil {
+				entityID = ent.ID
+			}
+		}
+	}
+	if entityID == "" {
+		if fe, err := s.Repo.GetFirstEntity(r.Context(), tenantID); err == nil {
+			entityID = fe.ID
+		} else {
+			writeError(w, http.StatusBadRequest, "No entity found — seed the organization first")
+			return
+		}
+	}
+
+	// Resolve buyer: buyer_id > buyer_gstin (GetOrCreate using buyer_name)
+	var buyerID *string
+	if id := strings.TrimSpace(r.FormValue("buyer_id")); id != "" {
+		buyerID = &id
+	} else if gstin := strings.TrimSpace(r.FormValue("buyer_gstin")); gstin != "" {
+		buyer, err := s.Repo.GetBuyerByGSTIN(r.Context(), tenantID, gstin)
+		if err != nil {
+			name := strings.TrimSpace(r.FormValue("buyer_name"))
+			if name == "" {
+				name = gstin
+			}
+			buyer, err = s.Repo.CreateBuyer(r.Context(), tenantID, name, gstin, []byte(`{}`))
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "Failed to create buyer: "+err.Error())
+				return
+			}
+		}
+		buyerID = &buyer.ID
+	}
+
+	// Amount fields — accept mobile naming (taxable_amount / total_amount) as well
 	grossAmount, _ := strconv.ParseFloat(r.FormValue("gross_amount"), 64)
+	if grossAmount == 0 {
+		grossAmount, _ = strconv.ParseFloat(r.FormValue("taxable_amount"), 64)
+	}
 	taxAmount, _ := strconv.ParseFloat(r.FormValue("tax_amount"), 64)
+	if taxAmount == 0 {
+		if total, err := strconv.ParseFloat(r.FormValue("total_amount"), 64); err == nil && total > grossAmount {
+			taxAmount = total - grossAmount
+		}
+	}
+
 	currency := strings.TrimSpace(r.FormValue("currency"))
 	if currency == "" {
 		currency = "INR"
@@ -540,8 +574,8 @@ func (s *Server) handleUploadLedgerInvoice(w http.ResponseWriter, r *http.Reques
 
 	invoice := &db.Invoice{
 		EntityID:      entityID,
-		VendorID:      entityID, // vendor_id is NOT NULL (the AP-direction column) -- harmless self-reference for ledger invoices, which use buyer_id instead. See db.Invoice doc comment.
-		BuyerID:       &buyerID,
+		VendorID:      entityID,
+		BuyerID:       buyerID,
 		InvoiceNumber: invoiceNumber,
 		InvoiceDate:   invoiceDate,
 		GrossAmount:   grossAmount,
@@ -563,7 +597,7 @@ func (s *Server) handleUploadLedgerInvoice(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	doc := &db.Document{InvoiceID: invoice.ID, DocumentType: "INVOICE_IMAGE", IsPrimary: true}
+	doc := &db.Document{InvoiceID: invoice.ID, DocumentType: "INVOICE", IsPrimary: true}
 	if err := s.Repo.CreateDocument(r.Context(), tenantID, doc); err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to create document record: "+err.Error())
 		return
@@ -581,11 +615,19 @@ func (s *Server) handleUploadLedgerInvoice(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	_ = s.Repo.WriteAuditLog(r.Context(), tenantID, invoice.ID, "INGESTED", claims.Email, "Invoice filed via ledger upload", map[string]interface{}{"file_name": header.Filename})
+	_ = s.Repo.WriteAuditLog(r.Context(), tenantID, invoice.ID, "INGESTED", claims.Email, "Invoice filed via mobile ledger upload", map[string]interface{}{"file_name": header.Filename})
 
-	writeJSON(w, http.StatusCreated, map[string]string{
-		"invoice_id": invoice.ID,
-		"status":     "INGESTED",
+	// Start OCR + compliance workflow. Non-fatal: invoice is already stored;
+	// the 15-min reconciler will catch any missed workflows.
+	if we, werr := s.startInvoiceWorkflow(context.Background(), tenantID, invoice.ID, s3Key); werr != nil {
+		_ = s.Repo.WriteAuditLog(r.Context(), tenantID, invoice.ID, "WORKFLOW_START_FAILED", claims.Email, "Temporal workflow failed to start: "+werr.Error(), nil)
+	} else {
+		_ = s.Repo.WriteAuditLog(r.Context(), tenantID, invoice.ID, "WORKFLOW_STARTED", claims.Email, "Temporal workflow started", map[string]interface{}{"workflow_id": we.GetID()})
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]interface{}{
+		"invoice": map[string]string{"id": invoice.ID},
+		"status":  "INGESTED",
 	})
 }
 
@@ -914,6 +956,45 @@ func (s *Server) handleSeedAdminData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ent := firstEnt // keep return value compatible
+
+	// Seed key buyers with known document requirements
+	type buyerReqSpec struct {
+		documentType     string
+		label            string
+		isBuyerGenerated bool
+	}
+	type buyerSeedSpec struct {
+		name string
+		gstin string
+		reqs []buyerReqSpec
+	}
+	buyerSeeds := []buyerSeedSpec{
+		{
+			name:  "Airplaza Retail Holdings Pvt Ltd (Vishal Mega Mart)",
+			gstin: "06AAAAA0013A1ZD",
+			reqs: []buyerReqSpec{
+				{"GATE_ENTRY_NOTE", "Gate Entry / Discrepancy Note", true},
+			},
+		},
+		{name: "Flipkart India Private Limited", gstin: "06AAAAA0004A1Z4"},
+		{name: "Max Hypermarket India Pvt Ltd", gstin: "06AAAAA0009A1Z9"},
+		{name: "Innovative Retail Concepts Pvt Ltd", gstin: "09AAAAA0018A1ZI"},
+	}
+	for _, bs := range buyerSeeds {
+		buyer, berr := s.Repo.CreateBuyer(r.Context(), org.ID, bs.name, bs.gstin, haryanaAddr)
+		if berr != nil {
+			continue // buyer may already exist from a previous seed call
+		}
+		for _, rspec := range bs.reqs {
+			_ = s.Repo.UpsertBuyerDocRequirement(r.Context(), org.ID, &db.BuyerDocRequirement{
+				BuyerID:          buyer.ID,
+				DocumentType:     rspec.documentType,
+				Label:            rspec.label,
+				IsBuyerGenerated: rspec.isBuyerGenerated,
+				SortOrder:        1,
+			})
+		}
+	}
 
 	// Seed one demo login per role so the app is usable immediately after seeding.
 	// Shared password is fine for a fresh demo tenant -- rotate before real use.

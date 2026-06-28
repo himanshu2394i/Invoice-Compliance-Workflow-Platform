@@ -12,6 +12,7 @@ import 'features/queue/queue_screen.dart';
 import 'features/owner/owner_dashboard_screen.dart';
 import 'features/owner/owner_invoices_screen.dart';
 import 'features/owner/invoice_detail_screen.dart';
+import 'features/settings/settings_screen.dart';
 
 final _router = GoRouter(
   initialLocation: '/login',
@@ -23,6 +24,7 @@ final _router = GoRouter(
     GoRoute(path: '/capture/checklist', builder: (_, __) => const ChecklistScreen()),
     GoRoute(path: '/queue', builder: (_, __) => const QueueScreen()),
     // Owner routes — dashboard + invoice detail
+    GoRoute(path: '/settings', builder: (_, __) => const SettingsScreen()),
     GoRoute(path: '/owner', builder: (_, __) => const OwnerDashboardScreen()),
     GoRoute(path: '/owner/invoices', builder: (_, __) => const OwnerInvoicesScreen()),
     GoRoute(

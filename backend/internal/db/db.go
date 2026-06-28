@@ -314,6 +314,20 @@ func (r *Repository) CreateVendor(ctx context.Context, orgID, name, taxId string
 	return vend, tx.Commit(ctx)
 }
 
+// GetEntityByGSTIN looks up a seller entity by its GST identification number.
+func (r *Repository) GetEntityByGSTIN(ctx context.Context, tenantID, gstin string) (*Entity, error) {
+	var e Entity
+	err := r.WithTx(ctx, tenantID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			"SELECT id, organization_id, legal_name, tax_identifier, address, created_at FROM entities WHERE tax_identifier = $1",
+			gstin).Scan(&e.ID, &e.OrganizationID, &e.LegalName, &e.TaxIdentifier, &e.Address, &e.CreatedAt)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &e, nil
+}
+
 // GetFirstEntity returns the tenant's earliest-created entity. Used by lightweight
 // ingestion flows (e.g. the worker upload simulator) that don't yet collect a real
 // entity selection from the caller.

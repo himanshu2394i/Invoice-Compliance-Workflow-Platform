@@ -29,6 +29,11 @@ class HomeScreen extends ConsumerWidget {
               tooltip: '$pending pending sync',
             ),
           IconButton(
+            icon: const Icon(Icons.settings_outlined),
+            onPressed: () => context.push('/settings'),
+            tooltip: 'Server settings',
+          ),
+          IconButton(
             icon: const Icon(Icons.logout),
             onPressed: () => ref.read(authProvider.notifier).logout(),
             tooltip: 'Sign out',
