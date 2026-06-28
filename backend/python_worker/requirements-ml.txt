@@ -1,0 +1,9 @@
+# Optional extras for real LayoutLMv3 OCR + GPT-4o AI escalation.
+# Without these installed, activities.py automatically falls back to deterministic
+# simulation mode -- which is enough to exercise the full Temporal workflow end to end.
+-r requirements.txt
+torch
+transformers
+Pillow
+openai
+langchain

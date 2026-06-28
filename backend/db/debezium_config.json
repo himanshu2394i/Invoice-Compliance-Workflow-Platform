@@ -1,0 +1,18 @@
+{
+  "name": "invoice-outbox-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": "1",
+    "plugin.name": "pgoutput",
+    "database.hostname": "rds.postgres.internal",
+    "database.port": "5432",
+    "database.user": "debezium",
+    "database.password": "secure_wal_password",
+    "database.dbname": "invoice_saas",
+    "database.server.name": "dbserver1",
+    "table.include.list": "public.transactional_outbox",
+    "tombstones.on.delete": "false",
+    "transforms": "outbox",
+    "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter"
+  }
+}

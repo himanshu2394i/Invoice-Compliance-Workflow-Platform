@@ -1,0 +1,6 @@
+# Optional extra for real OCR via AWS Textract's AnalyzeExpense API.
+# Without this installed -- or without AWS credentials configured at runtime --
+# activities.py automatically falls back to the next available extraction
+# path (LayoutLMv3 stub, then deterministic simulation).
+-r requirements.txt
+boto3
