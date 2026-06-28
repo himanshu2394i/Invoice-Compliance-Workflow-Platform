@@ -70,7 +70,12 @@ jobs:
         TEMPORAL_HOSTPORT: 127.0.0.1:7233
       run: |
         ./bin/worker &
+        WORKER_PID=$!
         sleep 5
+        if ! kill -0 $WORKER_PID 2>/dev/null; then
+          echo "ERROR: worker process exited immediately after starting" >&2
+          exit 1
+        fi
 
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -87,7 +92,12 @@ jobs:
       working-directory: ./backend/python_worker
       run: |
         python main.py &
+        OCR_WORKER_PID=$!
         sleep 5
+        if ! kill -0 $OCR_WORKER_PID 2>/dev/null; then
+          echo "ERROR: Python OCR worker process exited immediately after starting" >&2
+          exit 1
+        fi
 
     - name: Run tests
       working-directory: ./backend
