@@ -64,6 +64,11 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/rules", requireAuth(requireRole("ADMIN")(s.handleCreateRule)))
 	mux.HandleFunc("GET /api/v1/rules", requireAuth(requireRole("ADMIN")(s.handleListRules)))
 	mux.HandleFunc("DELETE /api/v1/rules/{id}", requireAuth(requireRole("ADMIN")(s.handleDeleteRule)))
+
+	// Mobile-specific endpoints — document requirement lookup and configuration
+	mux.HandleFunc("GET /api/v1/mobile/buyers/requirements", requireAuth(s.handleMobileGetBuyerRequirements))
+	mux.HandleFunc("GET /api/v1/mobile/buyers/{buyer_id}/requirements", requireAuth(s.handleMobileGetBuyerRequirements))
+	mux.HandleFunc("POST /api/v1/mobile/buyers/{buyer_id}/requirements", requireAuth(requireRole("WORKER", "ADMIN")(s.handleMobileUpsertBuyerRequirement)))
 }
 
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
