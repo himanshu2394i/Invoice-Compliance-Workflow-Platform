@@ -38,10 +38,11 @@ void main() {
   );
 
   test('saving a server URL trims trailing slash and persists it', () async {
-    // FlutterSecureStorage needs a platform channel mock in plain `flutter test`;
-    // ServerConfig.save/load both go through it, so this confirms the in-memory
-    // value updates correctly even when the secure-storage write itself is a
-    // no-op test double (verified indirectly via ServerConfig.baseUrl).
+    // This only proves the in-memory value updates correctly; it would pass
+    // identically even if the secure-storage write below were a no-op, since
+    // save() assigns to the in-memory field before awaiting the storage
+    // write. See the 'load() reads back what was actually written to secure
+    // storage' test below for a real round-trip proof.
     await ServerConfig.save('http://192.168.1.42:8000/');
     expect(ServerConfig.baseUrl, 'http://192.168.1.42:8000');
   });
@@ -50,5 +51,29 @@ void main() {
     await ServerConfig.save('http://192.168.1.42:8000');
     await ServerConfig.reset();
     expect(ServerConfig.baseUrl, ServerConfig.defaultUrl);
+  });
+
+  test('load() reads back what was actually written to secure storage, '
+      'not whatever is cached in memory', () async {
+    // Persist a value. This sets the in-memory field AND writes to the
+    // storage stub's backing map.
+    await ServerConfig.save('http://10.10.10.10:9000');
+
+    // Reset the in-memory field to the default. reset() also clears the
+    // storage stub's key, so to prove load() round-trips through storage
+    // (rather than just trusting/keeping whatever is in memory) we put a
+    // known value directly into the stub's backing map -- bypassing
+    // ServerConfig entirely -- after reset() wipes both.
+    await ServerConfig.reset();
+    expect(ServerConfig.baseUrl, ServerConfig.defaultUrl);
+    secureStorageData['server_base_url'] = 'http://172.16.5.5:7000';
+
+    // ServerConfig._baseUrl is still the default at this point; nothing
+    // ServerConfig-side has touched the new value. If load() merely kept
+    // (or recomputed from) in-memory state, baseUrl would stay at the
+    // default. Only a genuine read from the storage stub returns the
+    // value that was injected directly into the backing map.
+    await ServerConfig.load();
+    expect(ServerConfig.baseUrl, 'http://172.16.5.5:7000');
   });
 }
