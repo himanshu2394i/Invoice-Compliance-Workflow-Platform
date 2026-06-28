@@ -1,8 +1,20 @@
 # Manual Smoke Tests (camera-dependent, not automatable in CI)
 
 Run these on a real device or emulator with camera support before each release.
-Everything else in the app has automated coverage — see
-`docs/superpowers/plans/2026-06-28-e2e-testing-cicd.md`.
+Auth, settings persistence, and offline-sync have automated widget-test coverage
+— see `docs/superpowers/plans/2026-06-28-e2e-testing-cicd.md`. The screens below
+need manual checks because they're either camera-dependent or not yet covered:
+
+## Review screen, owner dashboard, gate-entry form, and dispute screens
+
+These have **no automated widget tests yet** (the equivalent backend API routes
+are covered by Go integration tests, but the Flutter UI for them isn't). Sanity-
+check manually until they're added:
+
+- [ ] Review screen: invoice fields editable, validation errors shown for bad GSTIN/amounts.
+- [ ] Owner dashboard: stats and recent invoices render for an ADMIN/MANAGER login.
+- [ ] Gate-entry form: submitting a short-receipt entry surfaces the resulting dispute in the UI.
+- [ ] Dispute screens: list/detail/credit-note upload render and submit correctly.
 
 ## Camera capture (`mobile/lib/features/capture/camera_screen.dart`)
 
