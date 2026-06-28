@@ -7,33 +7,77 @@ on:
     branches: [ "main" ]
 
 jobs:
-  build-go-backend:
-    name: Build & Lint Go Backend
+  test-go-backend:
+    name: Test Go Backend
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: admin
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: invoice_saas
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.21'
+        go-version: '1.25.0'
         cache-dependency-path: backend/go.sum
-        
-    - name: Go Format
+
+    - name: Go Format Check
       working-directory: ./backend
-      run: go fmt ./...
-      
+      run: |
+        diff <(gofmt -l .) <(echo -n "") || (echo "Run 'go fmt ./...' to fix formatting" && exit 1)
+
     - name: Go Vet
       working-directory: ./backend
       run: go vet ./...
-      
-    - name: Build API
+
+    - name: Run database migrations
       working-directory: ./backend
-      run: go build -o bin/api ./cmd/api
-      
-    - name: Build Worker
+      env:
+        MIGRATIONS_DATABASE_URL: postgres://admin:password@127.0.0.1:5432/invoice_saas?sslmode=disable
+      run: go run ./cmd/migrate up
+
+    - name: Start Temporal dev server
+      run: |
+        curl -sSf https://temporal.download/cli.sh | sh
+        ~/.temporalio/bin/temporal server start-dev --headless &
+        for i in $(seq 1 30); do
+          (echo > /dev/tcp/127.0.0.1/7233) >/dev/null 2>&1 && break
+          sleep 1
+        done
+
+    - name: Build API and Worker
       working-directory: ./backend
-      run: go build -o bin/worker ./cmd/worker
+      run: |
+        go build -o bin/api ./cmd/api
+        go build -o bin/worker ./cmd/worker
+
+    - name: Start worker
+      working-directory: ./backend
+      env:
+        DATABASE_URL: postgres://app_user:app_user_dev_password@127.0.0.1:5432/invoice_saas
+        TEMPORAL_HOSTPORT: 127.0.0.1:7233
+      run: |
+        ./bin/worker &
+        sleep 5
+
+    - name: Run tests
+      working-directory: ./backend
+      env:
+        TEST_DATABASE_URL: postgres://app_user:app_user_dev_password@127.0.0.1:5432/invoice_saas
+        TEST_TEMPORAL_HOSTPORT: 127.0.0.1:7233
+      run: go test ./... -v
 
   test-python-ml:
     name: Test Python ML Worker
