@@ -29,6 +29,17 @@ func databaseURL() string {
 	return "postgres://app_user:app_user_dev_password@127.0.0.1:5432/invoice_saas"
 }
 
+// temporalHostPort resolves the Temporal frontend address from the
+// environment, defaulting to the local dev address. Must be overridable
+// because in docker-compose this worker dials Temporal by service name
+// (e.g. "temporal:7233"), not localhost.
+func temporalHostPort() string {
+	if v := os.Getenv("TEMPORAL_HOSTPORT"); v != "" {
+		return v
+	}
+	return "127.0.0.1:7233"
+}
+
 func main() {
 	// Fail fast on a missing/invalid encryption key before connecting to
 	// anything else -- a misconfigured production deploy should never start
@@ -37,7 +48,7 @@ func main() {
 
 	// Create the client object just once per process
 	c, err := client.Dial(client.Options{
-		HostPort: "127.0.0.1:7233",
+		HostPort: temporalHostPort(),
 	})
 	if err != nil {
 		log.Fatalln("Unable to create Temporal client", err)

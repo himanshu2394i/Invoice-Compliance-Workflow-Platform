@@ -44,5 +44,17 @@ services:
       - temporal
     restart: on-failure
 
+  worker:
+    build:
+      context: ./backend
+      dockerfile: cmd/worker/Dockerfile
+    environment:
+      - DATABASE_URL=postgres://app_user:app_user_dev_password@postgres:5432/invoice_saas
+      - TEMPORAL_HOSTPORT=temporal:7233
+    depends_on:
+      - postgres
+      - temporal
+    restart: on-failure
+
 volumes:
   postgres_data:
