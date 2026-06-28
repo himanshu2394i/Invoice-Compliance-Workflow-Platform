@@ -990,3 +990,68 @@ func (r *Repository) DeleteTenantRule(ctx context.Context, tenantID, ruleID stri
 		return err
 	})
 }
+
+// BuyerDocRequirement is a supporting document type that workers must photograph
+// when filing an invoice for a specific buyer. is_buyer_generated=true means the
+// buyer produces this document and hands it to the worker (e.g. Vishal Mega Mart's
+// Gate Entry/Discrepancy Note); is_buyer_generated=false means the vendor/worker
+// must produce and attach the doc.
+type BuyerDocRequirement struct {
+	ID               string    `json:"id"`
+	OrganizationID   string    `json:"organization_id"`
+	BuyerID          string    `json:"buyer_id"`
+	DocumentType     string    `json:"document_type"`
+	Label            string    `json:"label"`
+	IsBuyerGenerated bool      `json:"is_buyer_generated"`
+	SortOrder        int       `json:"sort_order"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+// ListBuyerDocRequirements returns all required supporting documents for a buyer,
+// ordered by sort_order. Returns an empty slice (not an error) when no requirements
+// are configured — that just means the primary tax invoice is sufficient.
+func (r *Repository) ListBuyerDocRequirements(ctx context.Context, tenantID, buyerID string) ([]*BuyerDocRequirement, error) {
+	var results []*BuyerDocRequirement
+	err := r.WithTx(ctx, tenantID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx,
+			`SELECT id, organization_id, buyer_id, document_type, label, is_buyer_generated, sort_order, created_at
+			 FROM buyer_document_requirements
+			 WHERE buyer_id = $1
+			 ORDER BY sort_order ASC, created_at ASC`,
+			buyerID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var req BuyerDocRequirement
+			if err := rows.Scan(&req.ID, &req.OrganizationID, &req.BuyerID, &req.DocumentType, &req.Label, &req.IsBuyerGenerated, &req.SortOrder, &req.CreatedAt); err != nil {
+				return err
+			}
+			results = append(results, &req)
+		}
+		return rows.Err()
+	})
+	return results, err
+}
+
+// UpsertBuyerDocRequirement inserts or updates a document requirement for a buyer.
+// Uses ON CONFLICT on the (organization_id, buyer_id, document_type) unique key.
+func (r *Repository) UpsertBuyerDocRequirement(ctx context.Context, tenantID string, req *BuyerDocRequirement) error {
+	if req.ID == "" {
+		req.ID = uuid.New().String()
+	}
+	return r.WithTx(ctx, tenantID, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			`INSERT INTO buyer_document_requirements
+			   (id, organization_id, buyer_id, document_type, label, is_buyer_generated, sort_order)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7)
+			 ON CONFLICT (organization_id, buyer_id, document_type)
+			 DO UPDATE SET label = EXCLUDED.label,
+			               is_buyer_generated = EXCLUDED.is_buyer_generated,
+			               sort_order = EXCLUDED.sort_order`,
+			req.ID, tenantID, req.BuyerID, req.DocumentType, req.Label, req.IsBuyerGenerated, req.SortOrder)
+		return err
+	})
+}
+
