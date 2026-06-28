@@ -234,14 +234,16 @@ func decodeJSON[T any](t *testing.T, resp *http.Response) T {
 func (ts *testServer) pollInvoiceState(t *testing.T, token, invoiceID string, wantStates []string, timeout time.Duration) string {
 	t.Helper()
 	type invoiceResp struct {
-		CurrentState string `json:"current_state"`
+		Invoice struct {
+			CurrentState string `json:"current_state"`
+		} `json:"invoice"`
 	}
 	deadline := time.Now().Add(timeout)
 	var last string
 	for time.Now().Before(deadline) {
 		resp := ts.get(t, "/api/v1/invoices/"+invoiceID, token)
 		inv := decodeJSON[invoiceResp](t, resp)
-		last = inv.CurrentState
+		last = inv.Invoice.CurrentState
 		for _, want := range wantStates {
 			if last == want {
 				return last
