@@ -19,12 +19,16 @@ class QueuedPhoto extends HiveObject {
   @HiveField(4)
   bool isPrimary; // true for the invoice photo, false for supporting docs
 
+  @HiveField(5)
+  int pageNumber; // 1-based; page 2+ are additional pages of the same doc type
+
   QueuedPhoto({
     required this.localId,
     required this.localPath,
     required this.documentType,
     required this.label,
     required this.isPrimary,
+    this.pageNumber = 1,
   });
 }
 

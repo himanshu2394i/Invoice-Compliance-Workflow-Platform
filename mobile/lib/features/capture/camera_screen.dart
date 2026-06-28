@@ -14,11 +14,13 @@ class CameraTarget {
   final String documentType;
   final String label;
   final bool isPrimary;
+  final int pageNumber; // 1-based; > 1 means this is an additional page of an existing doc type
 
   const CameraTarget({
     required this.documentType,
     required this.label,
     required this.isPrimary,
+    this.pageNumber = 1,
   });
 }
 
@@ -108,7 +110,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
         ref.read(bundleProvider.notifier).setInvoicePhoto(compressedPath);
         if (mounted) context.go('/capture/review');
       } else {
-        // Supporting document
+        // Supporting document (page 1 or additional pages)
         ref.read(bundleProvider.notifier).addSupportingPhoto(
               QueuedPhoto(
                 localId: const Uuid().v4(),
@@ -116,6 +118,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
                 documentType: target!.documentType,
                 label: target.label,
                 isPrimary: false,
+                pageNumber: target.pageNumber,
               ),
             );
         if (mounted) context.go('/capture/checklist');

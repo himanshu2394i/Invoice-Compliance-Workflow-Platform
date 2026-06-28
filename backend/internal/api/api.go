@@ -69,6 +69,25 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/mobile/buyers/requirements", requireAuth(s.handleMobileGetBuyerRequirements))
 	mux.HandleFunc("GET /api/v1/mobile/buyers/{buyer_id}/requirements", requireAuth(s.handleMobileGetBuyerRequirements))
 	mux.HandleFunc("POST /api/v1/mobile/buyers/{buyer_id}/requirements", requireAuth(requireRole("WORKER", "ADMIN")(s.handleMobileUpsertBuyerRequirement)))
+
+	// Owner dashboard — invoice history, exceptions, dispute management
+	mux.HandleFunc("GET /api/v1/owner/dashboard", requireAuth(requireRole("ADMIN", "MANAGER")(s.handleOwnerDashboard)))
+	mux.HandleFunc("GET /api/v1/owner/invoices", requireAuth(requireRole("ADMIN", "MANAGER")(s.handleOwnerListInvoices)))
+	mux.HandleFunc("GET /api/v1/owner/invoices/{id}", requireAuth(requireRole("ADMIN", "MANAGER")(s.handleOwnerGetInvoice)))
+	mux.HandleFunc("GET /api/v1/owner/invoices/{id}/documents/{doc_id}/content", requireAuth(requireRole("ADMIN", "MANAGER")(s.handleOwnerDocumentContent)))
+
+	// Disputes — any authenticated user can raise; admin/manager can resolve
+	mux.HandleFunc("POST /api/v1/disputes", requireAuth(s.handleCreateDispute))
+	mux.HandleFunc("GET /api/v1/disputes", requireAuth(requireRole("ADMIN", "MANAGER")(s.handleListDisputes)))
+	mux.HandleFunc("PATCH /api/v1/disputes/{id}", requireAuth(requireRole("ADMIN", "MANAGER")(s.handleUpdateDispute)))
+	mux.HandleFunc("POST /api/v1/disputes/{id}/credit-note", requireAuth(requireRole("ADMIN", "MANAGER")(s.handleUploadCreditNote)))
+
+	// Gate entry metadata — set by workers/reviewers after photographing gate note
+	mux.HandleFunc("POST /api/v1/invoices/{id}/gate-entry", requireAuth(s.handleSetGateEntry))
+	mux.HandleFunc("GET /api/v1/invoices/{id}/gate-entry", requireAuth(s.handleGetGateEntries))
+
+	// Entity management — admin only; used to add/update seller legal entities
+	mux.HandleFunc("POST /api/v1/entities", requireAuth(requireRole("ADMIN")(s.handleCreateEntity)))
 }
 
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
@@ -855,18 +874,38 @@ func (s *Server) handleDeleteRule(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
-// Admin Seeder to initialize Organizations, Entities, and Vendors for testing.
+// handleSeedAdminData bootstraps a fresh Meridian Brothers/Distributors organization
+// with the three real seller legal entities, a placeholder vendor, and one demo
+// login per role. Safe to call in dev; hard-disabled in production unless
+// SEED_SETUP_TOKEN is configured. See requireSeedToken.
 func (s *Server) handleSeedAdminData(w http.ResponseWriter, r *http.Request) {
-	org, err := s.Repo.CreateOrganization(r.Context(), "Enterprise Corp A")
+	org, err := s.Repo.CreateOrganization(r.Context(), "Meridian Brothers & Distributors")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Org seeding failed: "+err.Error())
 		return
 	}
 
-	ent, err := s.Repo.CreateEntity(r.Context(), org.ID, "Enterprise Corp A India Ltd", "27AAAAA1111A1Z1", []byte(`{"city": "Mumbai", "country": "IN"}`))
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Entity seeding failed: "+err.Error())
-		return
+	haryanaAddr := []byte(`{"city":"Gurgaon","state":"Haryana","state_code":"06","country":"IN"}`)
+
+	// Three real Meridian seller legal entities (from invoice series analysis)
+	type entitySpec struct{ name, gstin string }
+	entitySpecs := []entitySpec{
+		{"Meridian Brothers", "06AAAAA0003A1Z3"},         // partnership — A26/Britannia+dairy, BIB/BRU
+		{"Meridian Distributors", "06AAAAA0015A1ZF"},     // proprietorship — CAD/Mondelez, MORDE/bulk chocolate, GST05/HUL-Lakme
+		{"Meridian Gurgaon", "06AAAAA0017A1ZH"},              // sole proprietorship — DBR/Nestlé, HAL/Haleon-GSK
+	}
+	createdEntities := make([]map[string]string, 0, len(entitySpecs))
+	var firstEnt *db.Entity
+	for _, es := range entitySpecs {
+		ent, err := s.Repo.CreateEntity(r.Context(), org.ID, es.name, es.gstin, haryanaAddr)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "Entity seeding failed for "+es.name+": "+err.Error())
+			return
+		}
+		if firstEnt == nil {
+			firstEnt = ent
+		}
+		createdEntities = append(createdEntities, map[string]string{"id": ent.ID, "name": ent.LegalName, "gstin": ent.TaxIdentifier})
 	}
 
 	ven, err := s.Repo.CreateVendor(r.Context(), org.ID, "Acme Industrial Supplies", "27BBBBB2222B2Z2", []byte(`{"bank_name": "State Bank of India", "account": "123456789"}`))
@@ -874,6 +913,7 @@ func (s *Server) handleSeedAdminData(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "Vendor seeding failed: "+err.Error())
 		return
 	}
+	ent := firstEnt // keep return value compatible
 
 	// Seed one demo login per role so the app is usable immediately after seeding.
 	// Shared password is fine for a fresh demo tenant -- rotate before real use.
@@ -914,6 +954,7 @@ func (s *Server) handleSeedAdminData(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"organization_id": org.ID,
 		"entity_id":       ent.ID,
+		"entities":        createdEntities,
 		"vendor_id":       ven.ID,
 		"users":           createdUsers,
 		"demo_password":   demoPassword,

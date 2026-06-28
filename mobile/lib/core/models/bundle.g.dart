@@ -22,13 +22,14 @@ class QueuedPhotoAdapter extends TypeAdapter<QueuedPhoto> {
       documentType: fields[2] as String,
       label: fields[3] as String,
       isPrimary: fields[4] as bool,
+      pageNumber: fields[5] == null ? 1 : fields[5] as int,
     );
   }
 
   @override
   void write(BinaryWriter writer, QueuedPhoto obj) {
     writer
-      ..writeByte(5)
+      ..writeByte(6)
       ..writeByte(0)
       ..write(obj.localId)
       ..writeByte(1)
@@ -38,7 +39,9 @@ class QueuedPhotoAdapter extends TypeAdapter<QueuedPhoto> {
       ..writeByte(3)
       ..write(obj.label)
       ..writeByte(4)
-      ..write(obj.isPrimary);
+      ..write(obj.isPrimary)
+      ..writeByte(5)
+      ..write(obj.pageNumber);
   }
 
   @override

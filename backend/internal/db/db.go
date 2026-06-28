@@ -1055,3 +1055,375 @@ func (r *Repository) UpsertBuyerDocRequirement(ctx context.Context, tenantID str
 	})
 }
 
+// ─── Gate Entry Metadata ─────────────────────────────────────────────────────
+
+type GateEntryMetadata struct {
+	ID                 string    `json:"id"`
+	OrganizationID     string    `json:"organization_id"`
+	DocumentID         string    `json:"document_id"`
+	InvoiceID          string    `json:"invoice_id"`
+	GateEntryNumber    *string   `json:"gate_entry_number"`
+	GateEntryDate      *string   `json:"gate_entry_date"` // ISO date string
+	AcceptedQty        *float64  `json:"accepted_qty"`
+	InvoiceQty         *float64  `json:"invoice_qty"`
+	DiscrepancyAmount  *float64  `json:"discrepancy_amount"`
+	IsShortReceipt     bool      `json:"is_short_receipt"`
+	Notes              *string   `json:"notes"`
+	EnteredBy          *string   `json:"entered_by"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+}
+
+func (r *Repository) UpsertGateEntryMetadata(ctx context.Context, tenantID string, m *GateEntryMetadata) error {
+	if m.ID == "" {
+		m.ID = uuid.New().String()
+	}
+	return r.WithTx(ctx, tenantID, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO gate_entry_metadata
+			  (id, organization_id, document_id, invoice_id, gate_entry_number, gate_entry_date,
+			   accepted_qty, invoice_qty, discrepancy_amount, is_short_receipt, notes, entered_by)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+			ON CONFLICT (document_id) DO UPDATE SET
+			  gate_entry_number   = EXCLUDED.gate_entry_number,
+			  gate_entry_date     = EXCLUDED.gate_entry_date,
+			  accepted_qty        = EXCLUDED.accepted_qty,
+			  invoice_qty         = EXCLUDED.invoice_qty,
+			  discrepancy_amount  = EXCLUDED.discrepancy_amount,
+			  is_short_receipt    = EXCLUDED.is_short_receipt,
+			  notes               = EXCLUDED.notes,
+			  updated_at          = NOW()`,
+			m.ID, tenantID, m.DocumentID, m.InvoiceID, m.GateEntryNumber, m.GateEntryDate,
+			m.AcceptedQty, m.InvoiceQty, m.DiscrepancyAmount, m.IsShortReceipt, m.Notes, m.EnteredBy)
+		return err
+	})
+}
+
+func (r *Repository) ListGateEntriesByInvoice(ctx context.Context, tenantID, invoiceID string) ([]*GateEntryMetadata, error) {
+	var out []*GateEntryMetadata
+	err := r.WithTx(ctx, tenantID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT id, organization_id, document_id, invoice_id, gate_entry_number,
+			       gate_entry_date::text, accepted_qty, invoice_qty, discrepancy_amount,
+			       is_short_receipt, notes, entered_by::text, created_at, updated_at
+			FROM gate_entry_metadata WHERE invoice_id = $1 ORDER BY created_at`, invoiceID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var m GateEntryMetadata
+			if err := rows.Scan(&m.ID, &m.OrganizationID, &m.DocumentID, &m.InvoiceID,
+				&m.GateEntryNumber, &m.GateEntryDate, &m.AcceptedQty, &m.InvoiceQty,
+				&m.DiscrepancyAmount, &m.IsShortReceipt, &m.Notes, &m.EnteredBy,
+				&m.CreatedAt, &m.UpdatedAt); err != nil {
+				return err
+			}
+			out = append(out, &m)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
+// ─── Invoice Disputes ─────────────────────────────────────────────────────────
+
+type InvoiceDispute struct {
+	ID                    string    `json:"id"`
+	OrganizationID        string    `json:"organization_id"`
+	InvoiceID             string    `json:"invoice_id"`
+	DisputeType           string    `json:"dispute_type"`
+	Description           string    `json:"description"`
+	RaisedBy              *string   `json:"raised_by"`
+	Status                string    `json:"status"`
+	ResolutionNotes       *string   `json:"resolution_notes"`
+	ResolvedBy            *string   `json:"resolved_by"`
+	ResolvedAt            *time.Time `json:"resolved_at"`
+	CreditNoteDocumentID  *string   `json:"credit_note_document_id"`
+	CreatedAt             time.Time `json:"created_at"`
+	UpdatedAt             time.Time `json:"updated_at"`
+}
+
+func (r *Repository) CreateDispute(ctx context.Context, tenantID string, d *InvoiceDispute) error {
+	d.ID = uuid.New().String()
+	return r.WithTx(ctx, tenantID, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO invoice_disputes
+			  (id, organization_id, invoice_id, dispute_type, description, raised_by, status)
+			VALUES ($1,$2,$3,$4,$5,$6,'OPEN')`,
+			d.ID, tenantID, d.InvoiceID, d.DisputeType, d.Description, d.RaisedBy)
+		return err
+	})
+}
+
+func (r *Repository) ListDisputes(ctx context.Context, tenantID, status string) ([]*InvoiceDispute, error) {
+	var out []*InvoiceDispute
+	err := r.WithTx(ctx, tenantID, func(tx pgx.Tx) error {
+		query := `SELECT id, organization_id, invoice_id, dispute_type, description,
+		                 raised_by::text, status, resolution_notes, resolved_by::text,
+		                 resolved_at, credit_note_document_id::text, created_at, updated_at
+		          FROM invoice_disputes`
+		var args []interface{}
+		if status != "" {
+			query += ` WHERE status = $1 ORDER BY created_at DESC`
+			args = append(args, status)
+		} else {
+			query += ` ORDER BY created_at DESC`
+		}
+		rows, err := tx.Query(ctx, query, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var d InvoiceDispute
+			if err := rows.Scan(&d.ID, &d.OrganizationID, &d.InvoiceID, &d.DisputeType,
+				&d.Description, &d.RaisedBy, &d.Status, &d.ResolutionNotes, &d.ResolvedBy,
+				&d.ResolvedAt, &d.CreditNoteDocumentID, &d.CreatedAt, &d.UpdatedAt); err != nil {
+				return err
+			}
+			out = append(out, &d)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
+func (r *Repository) GetDispute(ctx context.Context, tenantID, id string) (*InvoiceDispute, error) {
+	var d InvoiceDispute
+	err := r.WithTx(ctx, tenantID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `
+			SELECT id, organization_id, invoice_id, dispute_type, description,
+			       raised_by::text, status, resolution_notes, resolved_by::text,
+			       resolved_at, credit_note_document_id::text, created_at, updated_at
+			FROM invoice_disputes WHERE id = $1`, id).
+			Scan(&d.ID, &d.OrganizationID, &d.InvoiceID, &d.DisputeType, &d.Description,
+				&d.RaisedBy, &d.Status, &d.ResolutionNotes, &d.ResolvedBy, &d.ResolvedAt,
+				&d.CreditNoteDocumentID, &d.CreatedAt, &d.UpdatedAt)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &d, nil
+}
+
+func (r *Repository) UpdateDisputeStatus(ctx context.Context, tenantID, id, status, resolvedByID, notes string) error {
+	return r.WithTx(ctx, tenantID, func(tx pgx.Tx) error {
+		var resolvedBy interface{} = resolvedByID
+		if resolvedByID == "" {
+			resolvedBy = nil
+		}
+		var resolvedAt interface{}
+		if status == "RESOLVED" || status == "REJECTED" {
+			resolvedAt = time.Now()
+		}
+		_, err := tx.Exec(ctx, `
+			UPDATE invoice_disputes SET
+			  status = $2, resolution_notes = NULLIF($3,''), resolved_by = $4,
+			  resolved_at = $5, updated_at = NOW()
+			WHERE id = $1`, id, status, notes, resolvedBy, resolvedAt)
+		return err
+	})
+}
+
+func (r *Repository) SetDisputeCreditNote(ctx context.Context, tenantID, disputeID, documentID string) error {
+	return r.WithTx(ctx, tenantID, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			`UPDATE invoice_disputes SET credit_note_document_id = $2, updated_at = NOW() WHERE id = $1`,
+			disputeID, documentID)
+		return err
+	})
+}
+
+// ─── Owner Dashboard ──────────────────────────────────────────────────────────
+
+type OwnerDashboard struct {
+	TotalInvoices   int     `json:"total_invoices"`
+	TodayAmount     float64 `json:"today_amount"`
+	OpenExceptions  int     `json:"open_exceptions"`
+	OpenDisputes    int     `json:"open_disputes"`
+	PendingReview   int     `json:"pending_review"`
+}
+
+func (r *Repository) GetOwnerDashboard(ctx context.Context, tenantID string) (*OwnerDashboard, error) {
+	var d OwnerDashboard
+	err := r.WithTx(ctx, tenantID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `
+			SELECT
+			  (SELECT COUNT(*) FROM invoices)::int,
+			  COALESCE((SELECT SUM(gross_amount) FROM invoices WHERE DATE(invoice_date) = CURRENT_DATE), 0),
+			  (SELECT COUNT(*) FROM invoice_exceptions WHERE status = 'open')::int,
+			  (SELECT COUNT(*) FROM invoice_disputes WHERE status IN ('OPEN','OWNER_REVIEWING'))::int,
+			  (SELECT COUNT(*) FROM invoices WHERE current_state = 'INGESTED')::int`).
+			Scan(&d.TotalInvoices, &d.TodayAmount, &d.OpenExceptions, &d.OpenDisputes, &d.PendingReview)
+	})
+	return &d, err
+}
+
+// ─── Owner Invoice List ───────────────────────────────────────────────────────
+
+type OwnerInvoiceRow struct {
+	ID             string    `json:"id"`
+	InvoiceNumber  string    `json:"invoice_number"`
+	InvoiceDate    time.Time `json:"invoice_date"`
+	GrossAmount    float64   `json:"gross_amount"`
+	TaxAmount      float64   `json:"tax_amount"`
+	CurrentState   string    `json:"current_state"`
+	CreatedAt      time.Time `json:"created_at"`
+	BuyerName      *string   `json:"buyer_name"`
+	BuyerGSTIN     *string   `json:"buyer_gstin"`
+	EntityName     *string   `json:"entity_name"`
+	OpenExceptions int       `json:"open_exceptions"`
+	OpenDisputes   int       `json:"open_disputes"`
+	DocumentCount  int       `json:"document_count"`
+}
+
+func (r *Repository) ListInvoicesForOwner(ctx context.Context, tenantID string, limit, offset int) ([]*OwnerInvoiceRow, error) {
+	var out []*OwnerInvoiceRow
+	err := r.WithTx(ctx, tenantID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT i.id, i.invoice_number, i.invoice_date, i.gross_amount, i.tax_amount,
+			       i.current_state, i.created_at,
+			       b.name, b.gstin, e.legal_name,
+			       COALESCE(exc.cnt,0)::int, COALESCE(disp.cnt,0)::int, COALESCE(doc.cnt,0)::int
+			FROM invoices i
+			LEFT JOIN buyers b ON b.id = i.buyer_id
+			LEFT JOIN entities e ON e.id = i.entity_id
+			LEFT JOIN (
+			  SELECT invoice_id, COUNT(*) AS cnt FROM invoice_exceptions WHERE status = 'open' GROUP BY invoice_id
+			) exc ON exc.invoice_id = i.id
+			LEFT JOIN (
+			  SELECT invoice_id, COUNT(*) AS cnt FROM invoice_disputes WHERE status IN ('OPEN','OWNER_REVIEWING') GROUP BY invoice_id
+			) disp ON disp.invoice_id = i.id
+			LEFT JOIN (
+			  SELECT invoice_id, COUNT(*) AS cnt FROM documents GROUP BY invoice_id
+			) doc ON doc.invoice_id = i.id
+			ORDER BY i.created_at DESC
+			LIMIT $1 OFFSET $2`, limit, offset)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var row OwnerInvoiceRow
+			if err := rows.Scan(&row.ID, &row.InvoiceNumber, &row.InvoiceDate, &row.GrossAmount,
+				&row.TaxAmount, &row.CurrentState, &row.CreatedAt, &row.BuyerName, &row.BuyerGSTIN,
+				&row.EntityName, &row.OpenExceptions, &row.OpenDisputes, &row.DocumentCount); err != nil {
+				return err
+			}
+			out = append(out, &row)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
+// ─── Invoice Detail (for owner) ───────────────────────────────────────────────
+
+type DocumentRow struct {
+	ID           string    `json:"id"`
+	DocumentType string    `json:"document_type"`
+	IsPrimary    bool      `json:"is_primary"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+type InvoiceDetail struct {
+	Invoice    OwnerInvoiceRow    `json:"invoice"`
+	Documents  []DocumentRow      `json:"documents"`
+	Exceptions []*InvoiceException `json:"exceptions"`
+	Disputes   []*InvoiceDispute  `json:"disputes"`
+	GateEntry  []*GateEntryMetadata `json:"gate_entries"`
+}
+
+func (r *Repository) GetInvoiceDetail(ctx context.Context, tenantID, invoiceID string) (*InvoiceDetail, error) {
+	var detail InvoiceDetail
+
+	// Invoice row
+	err := r.WithTx(ctx, tenantID, func(tx pgx.Tx) error {
+		inv := &detail.Invoice
+		err := tx.QueryRow(ctx, `
+			SELECT i.id, i.invoice_number, i.invoice_date, i.gross_amount, i.tax_amount,
+			       i.current_state, i.created_at,
+			       b.name, b.gstin, e.legal_name,
+			       0::int, 0::int, 0::int
+			FROM invoices i
+			LEFT JOIN buyers b ON b.id = i.buyer_id
+			LEFT JOIN entities e ON e.id = i.entity_id
+			WHERE i.id = $1`, invoiceID).
+			Scan(&inv.ID, &inv.InvoiceNumber, &inv.InvoiceDate, &inv.GrossAmount,
+				&inv.TaxAmount, &inv.CurrentState, &inv.CreatedAt,
+				&inv.BuyerName, &inv.BuyerGSTIN, &inv.EntityName,
+				&inv.OpenExceptions, &inv.OpenDisputes, &inv.DocumentCount)
+		if err != nil {
+			return err
+		}
+
+		// Documents
+		docRows, err := tx.Query(ctx, `
+			SELECT id, document_type, is_primary, created_at
+			FROM documents WHERE invoice_id = $1
+			ORDER BY is_primary DESC, document_type, created_at`, invoiceID)
+		if err != nil {
+			return err
+		}
+		defer docRows.Close()
+		for docRows.Next() {
+			var d DocumentRow
+			if err := docRows.Scan(&d.ID, &d.DocumentType, &d.IsPrimary, &d.CreatedAt); err != nil {
+				return err
+			}
+			detail.Documents = append(detail.Documents, d)
+		}
+
+		// Exceptions
+		excRows, err := tx.Query(ctx, `
+			SELECT id, organization_id, invoice_id, exception_type, details, status, raised_at, resolved_at
+			FROM invoice_exceptions WHERE invoice_id = $1 ORDER BY raised_at DESC`, invoiceID)
+		if err != nil {
+			return err
+		}
+		defer excRows.Close()
+		for excRows.Next() {
+			var e InvoiceException
+			if err := excRows.Scan(&e.ID, &e.OrganizationID, &e.InvoiceID, &e.ExceptionType,
+				&e.Details, &e.Status, &e.RaisedAt, &e.ResolvedAt); err != nil {
+				return err
+			}
+			detail.Exceptions = append(detail.Exceptions, &e)
+		}
+
+		// Disputes
+		dispRows, err := tx.Query(ctx, `
+			SELECT id, organization_id, invoice_id, dispute_type, description,
+			       raised_by::text, status, resolution_notes, resolved_by::text,
+			       resolved_at, credit_note_document_id::text, created_at, updated_at
+			FROM invoice_disputes WHERE invoice_id = $1 ORDER BY created_at DESC`, invoiceID)
+		if err != nil {
+			return err
+		}
+		defer dispRows.Close()
+		for dispRows.Next() {
+			var d InvoiceDispute
+			if err := dispRows.Scan(&d.ID, &d.OrganizationID, &d.InvoiceID, &d.DisputeType,
+				&d.Description, &d.RaisedBy, &d.Status, &d.ResolutionNotes, &d.ResolvedBy,
+				&d.ResolvedAt, &d.CreditNoteDocumentID, &d.CreatedAt, &d.UpdatedAt); err != nil {
+				return err
+			}
+			detail.Disputes = append(detail.Disputes, &d)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Gate entry metadata (separate query, may reference doc IDs from above)
+	gateEntries, err := r.ListGateEntriesByInvoice(ctx, tenantID, invoiceID)
+	if err == nil {
+		detail.GateEntry = gateEntries
+	}
+
+	return &detail, nil
+}
+

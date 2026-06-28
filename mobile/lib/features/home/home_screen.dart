@@ -91,6 +91,23 @@ class HomeScreen extends ConsumerWidget {
                   padding: const EdgeInsets.symmetric(vertical: 16),
                 ),
               ),
+              // Owner dashboard — only for ADMIN and MANAGER roles
+              if (user?['role'] == 'ADMIN' || user?['role'] == 'MANAGER') ...[
+                const SizedBox(height: 12),
+                OutlinedButton.icon(
+                  onPressed: () => context.go('/owner'),
+                  icon: const Icon(Icons.dashboard, color: Color(0xFF1A237E)),
+                  label: const Text(
+                    'Owner Dashboard',
+                    style: TextStyle(fontSize: 16),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    foregroundColor: const Color(0xFF1A237E),
+                    side: const BorderSide(color: Color(0xFF1A237E)),
+                  ),
+                ),
+              ],
             ],
           ),
         ),

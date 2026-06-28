@@ -9,6 +9,9 @@ import 'features/capture/camera_screen.dart';
 import 'features/capture/review_screen.dart';
 import 'features/capture/checklist_screen.dart';
 import 'features/queue/queue_screen.dart';
+import 'features/owner/owner_dashboard_screen.dart';
+import 'features/owner/owner_invoices_screen.dart';
+import 'features/owner/invoice_detail_screen.dart';
 
 final _router = GoRouter(
   initialLocation: '/login',
@@ -19,6 +22,13 @@ final _router = GoRouter(
     GoRoute(path: '/capture/review', builder: (_, __) => const ReviewScreen()),
     GoRoute(path: '/capture/checklist', builder: (_, __) => const ChecklistScreen()),
     GoRoute(path: '/queue', builder: (_, __) => const QueueScreen()),
+    // Owner routes — dashboard + invoice detail
+    GoRoute(path: '/owner', builder: (_, __) => const OwnerDashboardScreen()),
+    GoRoute(path: '/owner/invoices', builder: (_, __) => const OwnerInvoicesScreen()),
+    GoRoute(
+      path: '/owner/invoices/:id',
+      builder: (_, state) => InvoiceDetailScreen(invoiceId: state.pathParameters['id']!),
+    ),
   ],
   redirect: (context, state) {
     final container = ProviderScope.containerOf(context);

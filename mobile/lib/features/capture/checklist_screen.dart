@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../../core/models/bundle.dart';
 import '../../core/storage/hive_service.dart';
 import 'bundle_provider.dart';
 import 'camera_screen.dart';
@@ -17,13 +18,14 @@ class _ChecklistScreenState extends ConsumerState<ChecklistScreen> {
   bool _isSubmitting = false;
   String? _submitError;
 
-  Future<void> _captureDoc(String docType, String label) async {
+  Future<void> _captureDoc(String docType, String label, {int pageNumber = 1}) async {
     context.go(
       '/capture/camera',
       extra: CameraTarget(
         documentType: docType,
-        label: label,
+        label: pageNumber > 1 ? '$label (page $pageNumber)' : label,
         isPrimary: false,
+        pageNumber: pageNumber,
       ),
     );
   }
@@ -44,12 +46,10 @@ class _ChecklistScreenState extends ConsumerState<ChecklistScreen> {
     try {
       final bundle = session.toBundle();
       await HiveService.saveBundle(bundle);
-      // Attempt immediate sync; failure queues it for later (handled by connectivity watcher)
       await syncService.syncPending();
       ref.read(bundleProvider.notifier).reset();
       if (mounted) context.go('/home');
     } catch (e) {
-      // Even on sync error, the bundle was saved locally — tell user it will sync later
       ref.read(bundleProvider.notifier).reset();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -79,7 +79,7 @@ class _ChecklistScreenState extends ConsumerState<ChecklistScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Primary invoice summary
+              // Invoice summary chip
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(12),
@@ -91,14 +91,10 @@ class _ChecklistScreenState extends ConsumerState<ChecklistScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(
-                              session.invoiceNumber,
-                              style: const TextStyle(fontWeight: FontWeight.bold),
-                            ),
-                            Text(
-                              '${session.buyerName}  •  ₹${session.totalAmount.toStringAsFixed(2)}',
-                              style: const TextStyle(color: Colors.grey),
-                            ),
+                            Text(session.invoiceNumber,
+                                style: const TextStyle(fontWeight: FontWeight.bold)),
+                            Text('${session.buyerName}  •  ₹${session.totalAmount.toStringAsFixed(2)}',
+                                style: const TextStyle(color: Colors.grey)),
                           ],
                         ),
                       ),
@@ -117,18 +113,14 @@ class _ChecklistScreenState extends ConsumerState<ChecklistScreen> {
                       children: [
                         Icon(Icons.info_outline, color: Colors.blue),
                         SizedBox(width: 12),
-                        Expanded(
-                          child: Text(
-                            'No additional documents required for this buyer.',
-                          ),
-                        ),
+                        Expanded(child: Text('No additional documents required for this buyer.')),
                       ],
                     ),
                   ),
                 ),
               ] else ...[
                 Text(
-                  'Required supporting documents (${captured.length}/${required.length})',
+                  'Required supporting documents',
                   style: Theme.of(context).textTheme.titleSmall,
                 ),
                 const SizedBox(height: 8),
@@ -137,29 +129,66 @@ class _ChecklistScreenState extends ConsumerState<ChecklistScreen> {
                     itemCount: required.length,
                     itemBuilder: (context, i) {
                       final req = required[i];
-                      final done = captured
-                          .any((p) => p.documentType == req.documentType);
+                      final pages = captured
+                          .where((p) => p.documentType == req.documentType)
+                          .toList();
+                      final done = pages.isNotEmpty;
+                      final nextPage = pages.length + 1;
+
                       return Card(
-                        child: ListTile(
-                          leading: Icon(
-                            done ? Icons.check_circle : Icons.radio_button_unchecked,
-                            color: done ? Colors.green : Colors.grey,
-                          ),
-                          title: Text(req.label),
-                          subtitle: req.isBuyerGenerated
-                              ? const Text(
-                                  'Buyer-generated — ask the store for this document',
-                                  style: TextStyle(
-                                      fontSize: 12, fontStyle: FontStyle.italic),
-                                )
-                              : null,
-                          trailing: done
-                              ? const Icon(Icons.photo_camera, color: Colors.green)
-                              : FilledButton.tonal(
-                                  onPressed: () =>
-                                      _captureDoc(req.documentType, req.label),
-                                  child: const Text('Capture'),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              ListTile(
+                                leading: Icon(
+                                  done ? Icons.check_circle : Icons.radio_button_unchecked,
+                                  color: done ? Colors.green : Colors.grey,
                                 ),
+                                title: Text(req.label),
+                                subtitle: req.isBuyerGenerated
+                                    ? const Text(
+                                        'Buyer-generated — ask the store for this document',
+                                        style: TextStyle(fontSize: 12, fontStyle: FontStyle.italic),
+                                      )
+                                    : null,
+                                trailing: done
+                                    ? null
+                                    : FilledButton.tonal(
+                                        onPressed: () => _captureDoc(req.documentType, req.label),
+                                        child: const Text('Capture'),
+                                      ),
+                              ),
+                              // Show captured pages
+                              if (done) ...[
+                                Padding(
+                                  padding: const EdgeInsets.only(left: 16, right: 8, bottom: 4),
+                                  child: Wrap(
+                                    spacing: 8,
+                                    children: [
+                                      for (int p = 0; p < pages.length; p++)
+                                        Chip(
+                                          avatar: const Icon(Icons.photo, size: 16),
+                                          label: Text('Page ${p + 1}'),
+                                          backgroundColor: Colors.green[50],
+                                        ),
+                                      // "Add page" button
+                                      ActionChip(
+                                        avatar: const Icon(Icons.add_a_photo, size: 16),
+                                        label: Text('Add page $nextPage'),
+                                        onPressed: () => _captureDoc(
+                                          req.documentType,
+                                          req.label,
+                                          pageNumber: nextPage,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
                         ),
                       );
                     },
@@ -169,10 +198,8 @@ class _ChecklistScreenState extends ConsumerState<ChecklistScreen> {
 
               if (_submitError != null) ...[
                 const SizedBox(height: 8),
-                Text(
-                  _submitError!,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
-                ),
+                Text(_submitError!,
+                    style: TextStyle(color: Theme.of(context).colorScheme.error)),
               ],
 
               const SizedBox(height: 16),
@@ -182,15 +209,11 @@ class _ChecklistScreenState extends ConsumerState<ChecklistScreen> {
                   onPressed: _isSubmitting ? null : _submit,
                   icon: _isSubmitting
                       ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(
-                              strokeWidth: 2, color: Colors.white),
+                          width: 18, height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                         )
                       : const Icon(Icons.upload),
-                  label: Text(
-                    session.allDocsComplete ? 'Submit Bundle' : 'Submit Anyway',
-                  ),
+                  label: Text(session.allDocsComplete ? 'Submit Bundle' : 'Submit Anyway'),
                   style: FilledButton.styleFrom(
                     padding: const EdgeInsets.symmetric(vertical: 16),
                     backgroundColor: session.allDocsComplete

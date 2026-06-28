@@ -14,4 +14,16 @@ class Endpoints {
 
   static String invoiceDocuments(String invoiceId) =>
       '$_base/api/v1/invoices/$invoiceId/documents';
+
+  static const String ownerDashboard = '$_base/api/v1/owner/dashboard';
+  static const String ownerInvoices = '$_base/api/v1/owner/invoices';
+  static const String disputes = '$_base/api/v1/disputes';
+
+  static String ownerInvoice(String id) => '$_base/api/v1/owner/invoices/$id';
+  static String ownerDocumentContent(String invoiceId, String docId) =>
+      '$_base/api/v1/owner/invoices/$invoiceId/documents/$docId/content';
+  static String dispute(String id) => '$_base/api/v1/disputes/$id';
+  static String disputeCreditNote(String id) => '$_base/api/v1/disputes/$id/credit-note';
+  static String invoiceGateEntry(String invoiceId) =>
+      '$_base/api/v1/invoices/$invoiceId/gate-entry';
 }
