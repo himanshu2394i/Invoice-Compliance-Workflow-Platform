@@ -25,9 +25,8 @@ func newLoginRateLimiter() *loginRateLimiter {
 	return &loginRateLimiter{attempts: make(map[string][]time.Time)}
 }
 
-// allow records an attempt for key and reports whether it's still within the
-// limit. Only failed/attempted logins should call this -- it's a brute-force
-// guard, not a general API throttle.
+// allow reports whether key is still within the limit, without recording
+// anything. Call this before checking credentials.
 func (l *loginRateLimiter) allow(key string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -41,11 +40,15 @@ func (l *loginRateLimiter) allow(key string) bool {
 			kept = append(kept, t)
 		}
 	}
+	l.attempts[key] = kept
+	return len(kept) < loginRateLimitMaxAttempts
+}
 
-	if len(kept) >= loginRateLimitMaxAttempts {
-		l.attempts[key] = kept
-		return false
-	}
-	l.attempts[key] = append(kept, now)
-	return true
+// recordFailure records one failed login attempt for key. Only call this
+// after a credential check has actually failed -- it's a brute-force guard,
+// not a general API throttle, so successful logins must never call it.
+func (l *loginRateLimiter) recordFailure(key string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.attempts[key] = append(l.attempts[key], time.Now())
 }

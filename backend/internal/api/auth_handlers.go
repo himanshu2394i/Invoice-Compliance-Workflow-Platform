@@ -109,7 +109,8 @@ func clientIP(r *http.Request) string {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	if !s.loginLimiter.allow(clientIP(r)) {
+	ip := clientIP(r)
+	if !s.loginLimiter.allow(ip) {
 		writeError(w, http.StatusTooManyRequests, "Too many login attempts. Try again later.")
 		return
 	}
@@ -122,11 +123,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	user, err := s.Repo.GetUserByEmail(r.Context(), req.Email)
 	if err != nil {
-		// Same error for "no such user" and "wrong password" -- don't leak which one.
+		s.loginLimiter.recordFailure(ip)
 		writeError(w, http.StatusUnauthorized, "Invalid email or password")
 		return
 	}
 	if !auth.CheckPassword(user.PasswordHash, req.Password) {
+		s.loginLimiter.recordFailure(ip)
 		writeError(w, http.StatusUnauthorized, "Invalid email or password")
 		return
 	}
