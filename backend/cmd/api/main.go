@@ -26,6 +26,17 @@ func databaseURL() string {
 	return "postgres://app_user:app_user_dev_password@127.0.0.1:5432/invoice_saas"
 }
 
+// temporalHostPort resolves the Temporal frontend address from the
+// environment, defaulting to the local dev address. Must be overridable
+// because in docker-compose this server dials Temporal by service name
+// (e.g. "temporal:7233"), not localhost.
+func temporalHostPort() string {
+	if v := os.Getenv("TEMPORAL_HOSTPORT"); v != "" {
+		return v
+	}
+	return "127.0.0.1:7233"
+}
+
 // storageRoot resolves where uploaded document bytes are kept on disk. Swap
 // internal/storage.Store for a real S3/GCS-backed implementation before
 // running multiple API replicas -- a local directory only works as long as
@@ -69,7 +80,7 @@ func main() {
 	auth.ValidateSecretConfig()
 	db.ValidateEncryptionConfig()
 
-	temporalClient, err := client.Dial(client.Options{HostPort: "127.0.0.1:7233"})
+	temporalClient, err := client.Dial(client.Options{HostPort: temporalHostPort()})
 	if err != nil {
 		log.Fatalf("Unable to connect to Temporal: %v", err)
 	}

@@ -1,0 +1,120 @@
+# Production compose file for the pilot deployment. Run from the repo root:
+#   docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env up -d
+#
+# Differs from the root docker-compose.yml (local dev) in a few ways:
+#   - Postgres and Temporal are NOT published to the host at all (only
+#     reachable container-to-container by service name) -- the AWS security
+#     group doesn't open those ports either, but no point publishing what
+#     doesn't need to be reachable.
+#   - Adds the api service (the dev compose file never containerized it).
+#   - Adds Caddy in front of the api for automatic HTTPS.
+#   - Adds a persistent volume for uploaded document storage.
+#   - Real secrets come from deploy/.env (never committed).
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: invoice_saas
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../init.sql:/docker-entrypoint-initdb.d/init.sql
+    restart: unless-stopped
+
+  temporal:
+    image: temporalio/auto-setup:1.24.1
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=admin
+      - POSTGRES_PWD=${POSTGRES_PASSWORD}
+      - POSTGRES_SEEDS=postgres
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+  temporal-ui:
+    image: temporalio/ui:2.27.0
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+    ports:
+      - "127.0.0.1:8080:8080" # debugging only -- reach via SSH tunnel, never public
+    depends_on:
+      - temporal
+    restart: unless-stopped
+
+  ocr-worker:
+    build:
+      context: ../backend/python_worker
+    environment:
+      - TEMPORAL_HOST=temporal:7233
+    depends_on:
+      - temporal
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ../backend
+      dockerfile: cmd/worker/Dockerfile
+    environment:
+      - DATABASE_URL=postgres://app_user:app_user_dev_password@postgres:5432/invoice_saas
+      - TEMPORAL_HOSTPORT=temporal:7233
+      - APP_ENV=production
+      - BANK_DETAILS_DEK_HEX=${BANK_DETAILS_DEK_HEX}
+    depends_on:
+      - postgres
+      - temporal
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ../backend
+      dockerfile: cmd/api/Dockerfile
+    environment:
+      - DATABASE_URL=postgres://app_user:app_user_dev_password@postgres:5432/invoice_saas
+      - TEMPORAL_HOSTPORT=temporal:7233
+      - STORAGE_ROOT=/data/storage
+      - APP_ENV=production
+      - JWT_SECRET=${JWT_SECRET}
+      - BANK_DETAILS_DEK_HEX=${BANK_DETAILS_DEK_HEX}
+      - SEED_SETUP_TOKEN=${SEED_SETUP_TOKEN}
+      - CORS_ALLOWED_ORIGIN=${PUBLIC_ORIGIN}
+    volumes:
+      - storage_data:/data/storage
+    depends_on:
+      - postgres
+      - temporal
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: ../backend
+      dockerfile: cmd/migrate/Dockerfile
+    environment:
+      - MIGRATIONS_DATABASE_URL=postgres://admin:${POSTGRES_PASSWORD}@postgres:5432/invoice_saas?sslmode=disable
+    depends_on:
+      - postgres
+    profiles: ["tools"] # never starts with `up`; run explicitly via `docker compose run migrate up`
+
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      - PUBLIC_DOMAIN=${PUBLIC_DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddyfile/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    command: caddy run --config /etc/caddyfile/Caddyfile --adapter caddyfile
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  storage_data:
+  caddy_data:
+  caddy_config:
