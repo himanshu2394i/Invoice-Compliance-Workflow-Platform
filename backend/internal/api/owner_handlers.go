@@ -118,6 +118,19 @@ func mimeByExt(ext string) string {
 
 // ─── Disputes ─────────────────────────────────────────────────────────────────
 
+// allowedDisputeTypes mirrors the dispute_type CHECK constraint on
+// invoice_disputes (see db/migrations/000005_gate_entry_disputes.up.sql) so a
+// bad value is rejected with a 400 at the API layer instead of surfacing as
+// an opaque 500 from the database constraint violation.
+var allowedDisputeTypes = map[string]bool{
+	"SHORT_RECEIPT":         true,
+	"CREDIT_NOTE_REQUESTED": true,
+	"ARITHMETIC_ERROR":      true,
+	"MISSING_PAGE":          true,
+	"TAX_STRUCTURE_ERROR":   true,
+	"OTHER":                 true,
+}
+
 type CreateDisputeRequest struct {
 	InvoiceID   string `json:"invoice_id"`
 	DisputeType string `json:"dispute_type"`
@@ -137,10 +150,24 @@ func (s *Server) handleCreateDispute(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invoice_id and dispute_type are required")
 		return
 	}
+	disputeType := strings.ToUpper(req.DisputeType)
+	if !allowedDisputeTypes[disputeType] {
+		writeError(w, http.StatusBadRequest, "dispute_type must be one of SHORT_RECEIPT | CREDIT_NOTE_REQUESTED | ARITHMETIC_ERROR | MISSING_PAGE | TAX_STRUCTURE_ERROR | OTHER")
+		return
+	}
+
+	// GetInvoice is RLS-scoped to tenantID, so this both confirms the invoice
+	// exists and that it belongs to the caller's tenant before we let a
+	// dispute row reference it -- without this check a worker could create a
+	// dispute pointing at another tenant's invoice ID.
+	if _, err := s.Repo.GetInvoice(r.Context(), tenantID, req.InvoiceID); err != nil {
+		writeError(w, http.StatusNotFound, "Invoice not found")
+		return
+	}
 
 	d := &db.InvoiceDispute{
 		InvoiceID:   req.InvoiceID,
-		DisputeType: strings.ToUpper(req.DisputeType),
+		DisputeType: disputeType,
 		Description: req.Description,
 		RaisedBy:    &claims.UserID,
 	}
@@ -152,8 +179,8 @@ func (s *Server) handleCreateDispute(w http.ResponseWriter, r *http.Request) {
 }
 
 type UpdateDisputeRequest struct {
-	Status  string `json:"status"`   // OPEN | OWNER_REVIEWING | RESOLVED | REJECTED
-	Notes   string `json:"notes"`
+	Status string `json:"status"` // OPEN | OWNER_REVIEWING | RESOLVED | REJECTED
+	Notes  string `json:"notes"`
 }
 
 func (s *Server) handleUpdateDispute(w http.ResponseWriter, r *http.Request) {
@@ -285,6 +312,14 @@ func (s *Server) handleSetGateEntry(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.DocumentID == "" {
 		writeError(w, http.StatusBadRequest, "document_id is required")
+		return
+	}
+
+	// Same tenant-ownership check as handleCreateDispute: confirm the
+	// path-supplied invoice belongs to this tenant before attaching gate
+	// entry metadata (and potentially auto-raising a dispute) against it.
+	if _, err := s.Repo.GetInvoice(r.Context(), tenantID, invoiceID); err != nil {
+		writeError(w, http.StatusNotFound, "Invoice not found")
 		return
 	}
 
