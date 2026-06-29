@@ -19,8 +19,11 @@ class QueuedPhoto extends HiveObject {
   @HiveField(4)
   bool isPrimary; // true for the invoice photo, false for supporting docs
 
-  @HiveField(5)
+  @HiveField(5, defaultValue: 1)
   int pageNumber; // 1-based; page 2+ are additional pages of the same doc type
+
+  @HiveField(6, defaultValue: false)
+  bool uploaded; // true once this photo's document has been confirmed stored server-side
 
   QueuedPhoto({
     required this.localId,
@@ -29,6 +32,7 @@ class QueuedPhoto extends HiveObject {
     required this.label,
     required this.isPrimary,
     this.pageNumber = 1,
+    this.uploaded = false,
   });
 }
 
@@ -70,6 +74,9 @@ class QueuedBundle extends HiveObject {
   @HiveField(11)
   int createdAtMs; // milliseconds since epoch
 
+  @HiveField(12)
+  String? remoteInvoiceId; // set once the primary ledger upload has succeeded server-side
+
   QueuedBundle({
     required this.localId,
     required this.invoiceNumber,
@@ -83,5 +90,6 @@ class QueuedBundle extends HiveObject {
     this.status = 'pending',
     this.syncError,
     required this.createdAtMs,
+    this.remoteInvoiceId,
   });
 }

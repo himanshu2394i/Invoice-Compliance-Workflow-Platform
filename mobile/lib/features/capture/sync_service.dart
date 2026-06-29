@@ -8,6 +8,11 @@ import '../../core/storage/hive_service.dart';
 class SyncService {
   final Dio _dio;
 
+  // Guards against two concurrent syncPending() calls (e.g. a connectivity
+  // change and a manual "sync now" tap firing back-to-back) racing to upload
+  // the same pending bundle twice.
+  bool _isSyncing = false;
+
   SyncService({Dio? dio}) : _dio = dio ?? buildDio();
 
   /// Sync all pending (status = 'pending' | 'failed') bundles to the backend.
@@ -15,38 +20,59 @@ class SyncService {
   ///   1. POST /api/v1/invoices/ledger-upload  → creates invoice + uploads primary photo
   ///   2. POST /api/v1/invoices/{id}/documents  → uploads each supporting photo
   ///
+  /// Resumable: a bundle that already has a remoteInvoiceId (step 1 already
+  /// succeeded) skips straight to uploading whichever supporting photos
+  /// aren't yet marked `uploaded`, so a retry after a partial failure never
+  /// re-creates the invoice or re-uploads documents that already landed.
+  ///
   /// Returns (synced, failed) counts.
   Future<(int, int)> syncPending() async {
-    final pending = HiveService.pendingBundles();
-    int synced = 0, failed = 0;
+    if (_isSyncing) return (0, 0);
+    _isSyncing = true;
+    try {
+      final pending = HiveService.pendingBundles();
+      int synced = 0, failed = 0;
 
-    for (final bundle in pending) {
-      try {
-        await _syncBundle(bundle);
-        await HiveService.updateBundleStatus(bundle.localId, 'synced');
-        synced++;
-      } catch (e) {
-        await HiveService.updateBundleStatus(
-          bundle.localId,
-          'failed',
-          error: e.toString(),
-        );
-        failed++;
+      for (final bundle in pending) {
+        try {
+          await _syncBundle(bundle);
+          await HiveService.updateBundleStatus(bundle.localId, 'synced');
+          synced++;
+        } catch (e) {
+          await HiveService.updateBundleStatus(
+            bundle.localId,
+            'failed',
+            error: e.toString(),
+          );
+          failed++;
+        }
       }
+      return (synced, failed);
+    } finally {
+      _isSyncing = false;
     }
-    return (synced, failed);
   }
 
   Future<void> _syncBundle(QueuedBundle bundle) async {
     final primary = bundle.photos.firstWhere((p) => p.isPrimary);
     final supporting = bundle.photos.where((p) => !p.isPrimary).toList();
 
-    // Step 1: Upload primary invoice photo
-    final invoiceId = await _uploadLedgerInvoice(bundle, primary);
+    // Step 1: Upload primary invoice photo (skip if a prior attempt already
+    // created the invoice — the server is also idempotent on invoice_number
+    // as a second line of defense, but checking first avoids the round trip).
+    var invoiceId = bundle.remoteInvoiceId;
+    if (invoiceId == null) {
+      invoiceId = await _uploadLedgerInvoice(bundle, primary);
+      bundle.remoteInvoiceId = invoiceId;
+      await bundle.save();
+    }
 
-    // Step 2: Upload each supporting document
+    // Step 2: Upload each supporting document not yet confirmed uploaded
     for (final photo in supporting) {
+      if (photo.uploaded) continue;
       await _uploadSupportingDoc(invoiceId, photo);
+      photo.uploaded = true;
+      await bundle.save();
     }
   }
 

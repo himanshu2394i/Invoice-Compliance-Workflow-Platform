@@ -485,6 +485,24 @@ func (r *Repository) GetInvoice(ctx context.Context, tenantID, invoiceID string)
 	return &inv, nil
 }
 
+// GetInvoiceByLedgerKey looks up an invoice by the natural key the mobile
+// ledger-upload flow retries on (entity + invoice number + invoice date).
+// Used to make handleUploadLedgerInvoice idempotent: a retried upload after
+// a network timeout — where the first attempt actually succeeded — reuses
+// the existing invoice instead of violating uq_invoice_ledger_dedup.
+func (r *Repository) GetInvoiceByLedgerKey(ctx context.Context, tenantID, entityID, invoiceNumber string, invoiceDate time.Time) (*Invoice, error) {
+	var inv Invoice
+	err := r.WithTx(ctx, tenantID, func(tx pgx.Tx) error {
+		return scanInvoice(tx.QueryRow(ctx,
+			"SELECT "+invoiceColumns+" FROM invoices WHERE entity_id = $1 AND invoice_number = $2 AND invoice_date = $3",
+			entityID, invoiceNumber, invoiceDate), &inv)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &inv, nil
+}
+
 // GetInvoiceByNumber looks up an invoice by its business number rather than
 // its UUID -- used by the supporting-document upload flow, where the worker
 // identifies the invoice by what's printed on the paper, not its internal id.

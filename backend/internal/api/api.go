@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"mime"
+	"mime/multipart"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -572,6 +573,33 @@ func (s *Server) handleUploadLedgerInvoice(w http.ResponseWriter, r *http.Reques
 		invoiceDate = d
 	}
 
+	// Idempotency: the mobile sync flow retries this exact request after any
+	// network failure, including timeouts where the first attempt actually
+	// succeeded server-side. Reuse the existing invoice (and skip re-storing
+	// the file) rather than creating a duplicate -- this is the server-side
+	// backstop for uq_invoice_ledger_dedup, covering the case where the
+	// device's local remoteInvoiceId was never persisted (e.g. app killed
+	// mid-request) or local state was lost (reinstall).
+	if existing, err := s.Repo.GetInvoiceByLedgerKey(r.Context(), tenantID, entityID, invoiceNumber, invoiceDate); err == nil {
+		if docs, derr := s.Repo.GetDocumentsForInvoice(r.Context(), tenantID, existing.ID); derr == nil {
+			for _, d := range docs {
+				if d.IsPrimary {
+					writeJSON(w, http.StatusCreated, map[string]interface{}{
+						"invoice": map[string]string{"id": existing.ID},
+						"status":  "INGESTED",
+					})
+					return
+				}
+			}
+		}
+		// Invoice exists but the primary document never landed (partial
+		// failure on the very first attempt) -- finish the upload against
+		// the existing invoice instead of creating a second one.
+		invoice := existing
+		s.finishLedgerUpload(w, r, tenantID, invoice, file, header, claims)
+		return
+	}
+
 	invoice := &db.Invoice{
 		EntityID:      entityID,
 		VendorID:      entityID,
@@ -590,6 +618,14 @@ func (s *Server) handleUploadLedgerInvoice(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	s.finishLedgerUpload(w, r, tenantID, invoice, file, header, claims)
+}
+
+// finishLedgerUpload stores the uploaded file, creates the primary document
+// record, writes the audit trail, and starts the OCR/compliance workflow.
+// Split out of handleUploadLedgerInvoice so the idempotent-retry path can
+// share it against a pre-existing invoice.
+func (s *Server) finishLedgerUpload(w http.ResponseWriter, r *http.Request, tenantID string, invoice *db.Invoice, file multipart.File, header *multipart.FileHeader, claims *auth.Claims) {
 	s3Key := "uploads/" + tenantID + "/" + invoice.ID + "/" + header.Filename
 	hash, size, err := s.Store.Save(s3Key, file)
 	if err != nil {

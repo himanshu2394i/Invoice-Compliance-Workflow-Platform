@@ -23,13 +23,14 @@ class QueuedPhotoAdapter extends TypeAdapter<QueuedPhoto> {
       label: fields[3] as String,
       isPrimary: fields[4] as bool,
       pageNumber: fields[5] == null ? 1 : fields[5] as int,
+      uploaded: fields[6] == null ? false : fields[6] as bool,
     );
   }
 
   @override
   void write(BinaryWriter writer, QueuedPhoto obj) {
     writer
-      ..writeByte(6)
+      ..writeByte(7)
       ..writeByte(0)
       ..write(obj.localId)
       ..writeByte(1)
@@ -41,7 +42,9 @@ class QueuedPhotoAdapter extends TypeAdapter<QueuedPhoto> {
       ..writeByte(4)
       ..write(obj.isPrimary)
       ..writeByte(5)
-      ..write(obj.pageNumber);
+      ..write(obj.pageNumber)
+      ..writeByte(6)
+      ..write(obj.uploaded);
   }
 
   @override
@@ -78,13 +81,14 @@ class QueuedBundleAdapter extends TypeAdapter<QueuedBundle> {
       status: fields[9] as String,
       syncError: fields[10] as String?,
       createdAtMs: fields[11] as int,
+      remoteInvoiceId: fields[12] as String?,
     );
   }
 
   @override
   void write(BinaryWriter writer, QueuedBundle obj) {
     writer
-      ..writeByte(12)
+      ..writeByte(13)
       ..writeByte(0)
       ..write(obj.localId)
       ..writeByte(1)
@@ -108,7 +112,9 @@ class QueuedBundleAdapter extends TypeAdapter<QueuedBundle> {
       ..writeByte(10)
       ..write(obj.syncError)
       ..writeByte(11)
-      ..write(obj.createdAtMs);
+      ..write(obj.createdAtMs)
+      ..writeByte(12)
+      ..write(obj.remoteInvoiceId);
   }
 
   @override
