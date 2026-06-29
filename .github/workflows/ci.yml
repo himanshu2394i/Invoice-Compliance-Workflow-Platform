@@ -76,6 +76,7 @@ jobs:
           echo "ERROR: worker process exited immediately after starting" >&2
           exit 1
         fi
+        echo "WORKER_PID=$WORKER_PID" >> "$GITHUB_ENV"
 
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -98,13 +99,51 @@ jobs:
           echo "ERROR: Python OCR worker process exited immediately after starting" >&2
           exit 1
         fi
+        echo "OCR_WORKER_PID=$OCR_WORKER_PID" >> "$GITHUB_ENV"
 
     - name: Run tests
       working-directory: ./backend
       env:
         TEST_DATABASE_URL: postgres://app_user:app_user_dev_password@127.0.0.1:5432/invoice_saas
         TEST_TEMPORAL_HOSTPORT: 127.0.0.1:7233
-      run: go test ./... -v
+      run: |
+        # The startup checks above only catch a worker that died in its first
+        # 5s. Keep watching both PIDs for the full test run too, so a worker
+        # that dies mid-suite fails fast with a clear message instead of
+        # surfacing as a confusing test hang/timeout.
+        go test ./... -v &
+        TEST_PID=$!
+
+        (
+          while true; do
+            sleep 2
+            if ! kill -0 "$TEST_PID" 2>/dev/null; then
+              exit 0 # tests already finished; nothing left to watch
+            fi
+            if ! kill -0 "$WORKER_PID" 2>/dev/null; then
+              echo "::error::Go worker (pid $WORKER_PID) died during the test run" >&2
+              kill -TERM "$TEST_PID" 2>/dev/null
+              exit 1
+            fi
+            if ! kill -0 "$OCR_WORKER_PID" 2>/dev/null; then
+              echo "::error::Python OCR worker (pid $OCR_WORKER_PID) died during the test run" >&2
+              kill -TERM "$TEST_PID" 2>/dev/null
+              exit 1
+            fi
+          done
+        ) &
+        WATCHDOG_PID=$!
+
+        # GitHub Actions runs this script with `set -e`; without disabling it
+        # here, a non-zero `wait` would abort the script before the watchdog
+        # gets cleaned up and the real exit code gets propagated below.
+        set +e
+        wait "$TEST_PID"
+        TEST_EXIT=$?
+        set -e
+
+        kill "$WATCHDOG_PID" 2>/dev/null
+        exit $TEST_EXIT
 
   test-python-ml:
     name: Test Python ML Worker
@@ -174,7 +213,30 @@ jobs:
 
     - name: Analyze
       working-directory: ./mobile
-      run: flutter analyze --no-fatal-infos --no-fatal-warnings
+      run: |
+        # --no-fatal-infos/--no-fatal-warnings stop pre-existing warnings/infos
+        # from failing CI, but applied bare they'd also let *new* ones slide in
+        # forever. Instead, only let the issue count stay at or below the
+        # checked-in baseline (analysis_baseline.txt) -- a real analyzer ERROR
+        # still fails the build immediately, regardless of the baseline.
+        set +e
+        OUTPUT=$(flutter analyze --no-fatal-infos --no-fatal-warnings 2>&1)
+        ANALYZE_EXIT=$?
+        set -e
+        echo "$OUTPUT"
+
+        if [ "$ANALYZE_EXIT" -ne 0 ]; then
+          echo "::error::flutter analyze failed (a real analyzer error, not just warnings/infos)"
+          exit $ANALYZE_EXIT
+        fi
+
+        BASELINE=$(cat analysis_baseline.txt)
+        CURRENT=$(echo "$OUTPUT" | grep -cE '^\s*(warning|info)\s-\s')
+        echo "Lint warning/info count: $CURRENT (baseline: $BASELINE)"
+        if [ "$CURRENT" -gt "$BASELINE" ]; then
+          echo "::error::flutter analyze found $CURRENT warning/info issues, more than the $BASELINE-issue baseline in mobile/analysis_baseline.txt. Fix the new issue(s), or if the increase is intentional, update the baseline file in the same PR."
+          exit 1
+        fi
 
     - name: Test
       working-directory: ./mobile
