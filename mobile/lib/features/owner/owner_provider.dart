@@ -212,7 +212,9 @@ class InvoiceDetail {
 // ─── API Service ─────────────────────────────────────────────────────────────
 
 class OwnerService {
-  final Dio _dio = buildDio();
+  final Dio _dio;
+
+  OwnerService({Dio? dio}) : _dio = dio ?? buildDio();
 
   Future<OwnerDashboard> getDashboard() async {
     final resp = await _dio.get(Endpoints.ownerDashboard);
