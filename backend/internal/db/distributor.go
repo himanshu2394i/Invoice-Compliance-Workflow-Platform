@@ -317,6 +317,19 @@ func (r *Repository) ListPaymentsByInvoice(ctx context.Context, tenantID, invoic
 	return list, err
 }
 
+// HasOpenDisputeForInvoice reports whether the invoice already has a dispute
+// in a non-terminal state — used to keep gate-entry auto-disputes idempotent
+// (a re-submitted gate entry must not stack a second SHORT_RECEIPT dispute).
+func (r *Repository) HasOpenDisputeForInvoice(ctx context.Context, tenantID, invoiceID string) (bool, error) {
+	var count int
+	err := r.WithTx(ctx, tenantID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			"SELECT COUNT(*) FROM invoice_disputes WHERE invoice_id = $1 AND status IN ('OPEN', 'OWNER_REVIEWING')",
+			invoiceID).Scan(&count)
+	})
+	return count > 0, err
+}
+
 // BuyerReceivable is one buyer's outstanding credit position with standard
 // aging buckets (days past due). Amounts are bill-total minus payments over
 // CREDIT invoices only; legacy invoices (payment_type NULL) never count.

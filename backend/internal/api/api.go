@@ -91,6 +91,30 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/invoices/{id}/gate-entry", requireAuth(s.handleSetGateEntry))
 	mux.HandleFunc("GET /api/v1/invoices/{id}/gate-entry", requireAuth(s.handleGetGateEntries))
 
+	// Receivables + payments — the collections workflow. Recording money is
+	// FINANCE/MANAGER/ADMIN; REVIEWER can look but not touch.
+	mux.HandleFunc("GET /api/v1/owner/receivables", requireAuth(requireRole("ADMIN", "MANAGER", "FINANCE", "REVIEWER")(s.handleGetReceivables)))
+	mux.HandleFunc("GET /api/v1/owner/receivables/{buyer_id}", requireAuth(requireRole("ADMIN", "MANAGER", "FINANCE", "REVIEWER")(s.handleGetBuyerReceivables)))
+	mux.HandleFunc("POST /api/v1/invoices/{id}/payments", requireAuth(requireRole("ADMIN", "MANAGER", "FINANCE")(s.handleRecordPayment)))
+	mux.HandleFunc("GET /api/v1/invoices/{id}/payments", requireAuth(requireRole("ADMIN", "MANAGER", "FINANCE", "REVIEWER")(s.handleListPayments)))
+
+	// Sales reports
+	mux.HandleFunc("GET /api/v1/owner/reports/sales", requireAuth(requireRole("ADMIN", "MANAGER", "FINANCE", "REVIEWER")(s.handleSalesReport)))
+
+	// Master data — reads open to all authenticated users (capture flow
+	// caches series/branches offline); writes ADMIN-only.
+	mux.HandleFunc("GET /api/v1/principals", requireAuth(s.handleListPrincipals))
+	mux.HandleFunc("POST /api/v1/principals", requireAuth(requireRole("ADMIN")(s.handleCreatePrincipal)))
+	mux.HandleFunc("DELETE /api/v1/principals/{id}", requireAuth(requireRole("ADMIN")(s.handleDeletePrincipal)))
+	mux.HandleFunc("GET /api/v1/series-registry", requireAuth(s.handleListSeriesRegistry))
+	mux.HandleFunc("POST /api/v1/series-registry", requireAuth(requireRole("ADMIN")(s.handleUpsertSeriesEntry)))
+	mux.HandleFunc("DELETE /api/v1/series-registry/{id}", requireAuth(requireRole("ADMIN")(s.handleDeleteSeriesEntry)))
+	mux.HandleFunc("GET /api/v1/buyers/branches", requireAuth(s.handleListBuyerBranches))
+	mux.HandleFunc("GET /api/v1/buyers/{id}/branches", requireAuth(s.handleListBuyerBranches))
+	mux.HandleFunc("POST /api/v1/buyers/{id}/branches", requireAuth(requireRole("ADMIN")(s.handleCreateBuyerBranch)))
+	mux.HandleFunc("DELETE /api/v1/buyers/branches/{branch_id}", requireAuth(requireRole("ADMIN")(s.handleDeleteBuyerBranch)))
+	mux.HandleFunc("PATCH /api/v1/buyers/{id}", requireAuth(requireRole("ADMIN")(s.handlePatchBuyer)))
+
 	// Entity management — admin only; used to add/update seller legal entities
 	mux.HandleFunc("POST /api/v1/entities", requireAuth(requireRole("ADMIN")(s.handleCreateEntity)))
 }
@@ -759,6 +783,54 @@ func (s *Server) handleUploadLedgerInvoice(w http.ResponseWriter, r *http.Reques
 	if series := strings.TrimSpace(r.FormValue("invoice_series")); series != "" {
 		invoice.InvoiceSeries = &series
 	}
+
+	// Distributor-domain fields (all optional; legacy clients omit them).
+	if v := strings.ToUpper(strings.TrimSpace(r.FormValue("payment_type"))); v == "CASH" || v == "CREDIT" {
+		invoice.PaymentType = &v
+	}
+	if v := strings.TrimSpace(r.FormValue("payment_terms_days")); v != "" {
+		if days, err := strconv.Atoi(v); err == nil && days >= 0 {
+			invoice.PaymentTermsDays = &days
+		}
+	}
+	if v := strings.TrimSpace(r.FormValue("buyer_branch_id")); v != "" {
+		invoice.BuyerBranchID = &v
+	}
+	if v := strings.TrimSpace(r.FormValue("salesman")); v != "" {
+		invoice.Salesman = &v
+	}
+	if v := strings.TrimSpace(r.FormValue("beat")); v != "" {
+		invoice.Beat = &v
+	}
+
+	// CREDIT invoices get a due date: explicit terms win, else the buyer's
+	// default terms, else due immediately (terms 0 -> due on invoice date).
+	if invoice.PaymentType != nil && *invoice.PaymentType == "CREDIT" {
+		terms := 0
+		if invoice.PaymentTermsDays != nil {
+			terms = *invoice.PaymentTermsDays
+		} else if buyerID != nil {
+			if buyer, err := s.Repo.GetBuyerByID(r.Context(), tenantID, *buyerID); err == nil && buyer.DefaultPaymentTermsDays != nil {
+				terms = *buyer.DefaultPaymentTermsDays
+				invoice.PaymentTermsDays = &terms
+			}
+		}
+		due := invoiceDate.AddDate(0, 0, terms)
+		invoice.DueDate = &due
+	}
+
+	// Stamp principal/series from the registry (longest prefix match) when
+	// the client didn't supply them. Best-effort: an unknown prefix must
+	// never block ingestion.
+	if entry, err := s.Repo.ResolveSeriesForInvoiceNumber(r.Context(), tenantID, invoiceNumber); err == nil && entry != nil {
+		if invoice.InvoiceSeries == nil {
+			invoice.InvoiceSeries = &entry.SeriesPrefix
+		}
+		if invoice.PrincipalID == nil && entry.PrincipalID != nil {
+			invoice.PrincipalID = entry.PrincipalID
+		}
+	}
+
 	if err := s.Repo.CreateInvoice(r.Context(), tenantID, invoice); err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to create invoice record: "+err.Error())
 		return

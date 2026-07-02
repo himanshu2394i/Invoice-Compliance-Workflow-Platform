@@ -367,19 +367,32 @@ func (s *Server) handleSetGateEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Auto-raise a dispute if this is a short receipt
-	if req.IsShortReceipt {
-		desc := "Short receipt detected at gate entry"
-		if req.Notes != nil && *req.Notes != "" {
-			desc = *req.Notes
+	// Auto-raise a dispute on any receiving mismatch, not just when the
+	// client explicitly flags a short receipt: accepted qty below invoiced
+	// qty and a non-zero discrepancy amount are equally real exposures
+	// (invoice_extraction.md gate-entry notes carry exactly these fields).
+	// Idempotent: a re-submitted gate entry never stacks a second dispute.
+	mismatch := req.IsShortReceipt ||
+		(req.AcceptedQty != nil && req.InvoiceQty != nil && *req.AcceptedQty < *req.InvoiceQty) ||
+		(req.DiscrepancyAmount != nil && *req.DiscrepancyAmount > 0)
+	if mismatch {
+		hasOpen, err := s.Repo.HasOpenDisputeForInvoice(r.Context(), tenantID, invoiceID)
+		if err == nil && !hasOpen {
+			desc := "Receiving mismatch detected at gate entry"
+			if req.AcceptedQty != nil && req.InvoiceQty != nil && *req.AcceptedQty < *req.InvoiceQty {
+				desc = fmt.Sprintf("Short receipt: accepted %.2f of %.2f invoiced", *req.AcceptedQty, *req.InvoiceQty)
+			}
+			if req.Notes != nil && *req.Notes != "" {
+				desc += " — " + *req.Notes
+			}
+			dispute := &db.InvoiceDispute{
+				InvoiceID:   invoiceID,
+				DisputeType: "SHORT_RECEIPT",
+				Description: desc,
+				RaisedBy:    &userID,
+			}
+			_ = s.Repo.CreateDispute(r.Context(), tenantID, dispute)
 		}
-		dispute := &db.InvoiceDispute{
-			InvoiceID:   invoiceID,
-			DisputeType: "SHORT_RECEIPT",
-			Description: desc,
-			RaisedBy:    &userID,
-		}
-		_ = s.Repo.CreateDispute(r.Context(), tenantID, dispute)
 	}
 
 	_ = s.Repo.WriteAuditLog(r.Context(), tenantID, invoiceID, "GATE_ENTRY_SET",
