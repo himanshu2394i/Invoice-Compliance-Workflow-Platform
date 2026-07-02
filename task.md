@@ -133,3 +133,36 @@ than the mobile app exposes, and several rough edges in the capture flow.
 - `[ ]` Add password-change/reset support before real staff rollout.
 - `[ ]` Add MFA for admin/manager users before broader pilot use.
 - `[ ]` Define DPDP/CERT-In operating checklist while keeping data indefinitely for now.
+
+## Phase 9 — Distributor-ops rebuild (2026-07-02)
+
+Spec: `docs/superpowers/specs/2026-07-02-distributor-ops-rebuild-design.md`;
+plan: `docs/superpowers/plans/2026-07-02-distributor-ops-rebuild.md`. Turns
+the capture pilot into a distributor operations product around the real
+business documented in `invoice_extraction.md`.
+
+- `[x]` Migration 000009: principals, invoice-series registry, buyer
+  branches, buyer sales-channel + default credit terms, invoice payment
+  fields (type/terms/due date/salesman/beat), invoice_payments table — all
+  additive with RLS; seeds the known Meridian principals + series mappings.
+- `[x]` Receivables: `GET /owner/receivables` (+ per-buyer drill-down) with
+  aging buckets over CREDIT invoices; `POST/GET /invoices/{id}/payments`
+  with in-transaction over-balance rejection; overdue invoices join the
+  alerts feed.
+- `[x]` Sales reports: `GET /owner/reports/sales` grouped by
+  principal/buyer/channel/entity/salesman (whitelisted).
+- `[x]` Master data CRUD: principals, series registry, buyer branches,
+  PATCH buyer channel/terms (reads all-authed, writes ADMIN).
+- `[x]` Ledger upload stamps payment terms/due date and resolves
+  principal/series by longest invoice-number prefix; gate-entry auto-dispute
+  now fires on any receiving mismatch, idempotently.
+- `[x]` Mobile navigation rebuilt into role shells: worker
+  Capture|Queue|My Invoices, owner Dashboard|Invoices|Receivables|Alerts|More
+  (BackButtonListener-based back policy, double-back exit).
+- `[x]` Mobile receivables tab + record-payment sheet; dashboard sales
+  section; capture Cash/Credit + terms + series chip + branch picker;
+  invoice-detail payment history/balance.
+- `[x]` Verified: full backend suite green against Docker Postgres+Temporal;
+  47+ mobile tests green; analyzer at the 27-issue baseline.
+- `[ ]` Deploy migration 000009 + new API to the pilot EC2 server and
+  rebuild/sideload the APK (not done from this session).
