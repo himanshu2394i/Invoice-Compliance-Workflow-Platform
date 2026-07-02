@@ -296,12 +296,30 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
                 _InfoRow('Date', inv.invoiceDate.substring(0, 10)),
                 _InfoRow('Gross', '₹${inv.grossAmount.toStringAsFixed(2)}'),
                 _InfoRow('Tax', '₹${inv.taxAmount.toStringAsFixed(2)}'),
+                if (inv.paymentType != null)
+                  _InfoRow(
+                      'Payment',
+                      inv.dueDate == null
+                          ? inv.paymentType!
+                          : '${inv.paymentType} — due ${inv.dueDate!.substring(0, 10)}'),
               ],
             ),
           ),
         ),
 
         const SizedBox(height: 16),
+
+        // Payments + balance — only meaningful for CREDIT invoices.
+        if (inv.paymentType == 'CREDIT') ...[
+          _PaymentsSection(
+            invoiceId: widget.invoiceId,
+            billTotal: inv.grossAmount,
+            hasOpenShortReceipt: detail.disputes.any((d) =>
+                d.disputeType == 'SHORT_RECEIPT' &&
+                (d.status == 'OPEN' || d.status == 'OWNER_REVIEWING')),
+          ),
+          const SizedBox(height: 16),
+        ],
 
         if (canApprove) ...[
           Row(
@@ -1060,6 +1078,99 @@ class _StatusChip extends StatelessWidget {
         style:
             TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w600),
       ),
+    );
+  }
+}
+
+/// Payments made against a CREDIT invoice, plus the running balance and a
+/// pointer at any unresolved short-receipt dispute (the reconciliation view:
+/// invoiced -> paid -> balance, with credit-note work still open).
+class _PaymentsSection extends ConsumerWidget {
+  final String invoiceId;
+  final double billTotal;
+  final bool hasOpenShortReceipt;
+
+  const _PaymentsSection({
+    required this.invoiceId,
+    required this.billTotal,
+    required this.hasOpenShortReceipt,
+  });
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final payments = ref.watch(invoicePaymentsProvider(invoiceId));
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _SectionHeader('Payments', Icons.payments_outlined),
+        const SizedBox(height: 8),
+        payments.when(
+          loading: () => const LinearProgressIndicator(),
+          error: (e, _) => Text('Could not load payments: $e',
+              style: const TextStyle(color: Colors.grey, fontSize: 12)),
+          data: (list) {
+            final paid =
+                list.fold<double>(0, (sum, p) => sum + p.amount);
+            final balance = billTotal - paid;
+            return Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text('Paid Rs.${paid.toStringAsFixed(2)}'),
+                        Text(
+                          balance <= 0.005
+                              ? 'Settled'
+                              : 'Balance Rs.${balance.toStringAsFixed(2)}',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: balance <= 0.005
+                                ? Colors.green
+                                : Colors.red.shade700,
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (hasOpenShortReceipt)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 6),
+                        child: Text(
+                          'Short-receipt dispute open - final receivable may drop once the credit note lands.',
+                          style:
+                              TextStyle(fontSize: 12, color: Colors.orange),
+                        ),
+                      ),
+                    if (list.isNotEmpty) const Divider(),
+                    for (final p in list)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 2),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              '${p.mode}${p.reference == null ? '' : ' - ${p.reference}'}',
+                              style: const TextStyle(fontSize: 13),
+                            ),
+                            Text(
+                              'Rs.${p.amount.toStringAsFixed(2)}'
+                              '${p.paidOn == null ? '' : '  ${p.paidOn!.day.toString().padLeft(2, '0')}/${p.paidOn!.month.toString().padLeft(2, '0')}/${p.paidOn!.year}'}',
+                              style: const TextStyle(fontSize: 13),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ],
     );
   }
 }

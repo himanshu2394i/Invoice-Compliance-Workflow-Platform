@@ -183,7 +183,42 @@ void main() {
     expect(session.invoiceDate, '2026-06-09');
     expect(session.taxableAmount, 10393.45);
     expect(session.totalAmount, 10913.00);
+    // Cash is the default payment type; no terms/branch carried.
+    expect(session.paymentType, 'CASH');
+    expect(session.paymentTermsDays, isNull);
 
+    expect(find.text('Checklist'), findsOneWidget);
+  });
+
+  testWidgets('selecting Credit reveals terms and carries them to the bundle',
+      (tester) async {
+    final container = await _pumpReview(tester);
+
+    // Terms field is hidden while Cash is selected.
+    expect(find.text('Terms (days)'), findsNothing);
+
+    // Fill first: the terms field inserts itself mid-form once Credit is
+    // selected, which would shift _fillValidForm's positional indices.
+    await _fillValidForm(tester);
+
+    await tester.ensureVisible(find.text('Credit'));
+    await tester.tap(find.text('Credit'));
+    await tester.pumpAndSettle();
+    expect(find.text('Terms (days)'), findsOneWidget);
+    // The terms field is the last TextFormField added by the Credit toggle;
+    // find it by its label's ancestor form field.
+    await tester.enterText(
+      find.ancestor(
+        of: find.text('Terms (days)'),
+        matching: find.byType(TextFormField),
+      ),
+      '30',
+    );
+    await _tapNext(tester);
+
+    final session = container.read(bundleProvider);
+    expect(session.paymentType, 'CREDIT');
+    expect(session.paymentTermsDays, 30);
     expect(find.text('Checklist'), findsOneWidget);
   });
 }

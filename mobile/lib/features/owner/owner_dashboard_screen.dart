@@ -5,6 +5,7 @@ import '../auth/auth_provider.dart';
 import '../capture/bundle_provider.dart';
 import '../capture/camera_screen.dart';
 import 'owner_provider.dart';
+import 'sales_report_section.dart';
 
 class OwnerDashboardScreen extends ConsumerWidget {
   const OwnerDashboardScreen({super.key});
@@ -120,6 +121,9 @@ class OwnerDashboardScreen extends ConsumerWidget {
                   ],
                 ),
               ),
+
+              const SizedBox(height: 24),
+              const SalesReportSection(),
 
               const SizedBox(height: 24),
               Row(

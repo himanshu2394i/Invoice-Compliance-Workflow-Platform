@@ -69,7 +69,7 @@ void main() {
         overrides: [
           authProvider.overrideWith(
             (_) => AuthNotifier(
-              initialState: AuthState(
+              initialState: const AuthState(
                 isLoggedIn: true,
                 user: {'full_name': 'Worker User', 'role': 'WORKER'},
               ),

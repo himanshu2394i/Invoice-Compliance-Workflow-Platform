@@ -75,6 +75,10 @@ class OwnerInvoice {
   final int openExceptions;
   final int openDisputes;
   final int documentCount;
+  // Distributor-domain fields — present on the detail endpoint (raw invoice
+  // row), absent from the owner list rows.
+  final String? paymentType; // CASH | CREDIT
+  final String? dueDate;
 
   const OwnerInvoice({
     required this.id,
@@ -90,6 +94,8 @@ class OwnerInvoice {
     required this.openExceptions,
     required this.openDisputes,
     required this.documentCount,
+    this.paymentType,
+    this.dueDate,
   });
 
   factory OwnerInvoice.fromJson(Map<String, dynamic> j) => OwnerInvoice(
@@ -106,6 +112,8 @@ class OwnerInvoice {
         openExceptions: (j['open_exceptions'] as num? ?? 0).toInt(),
         openDisputes: (j['open_disputes'] as num? ?? 0).toInt(),
         documentCount: (j['document_count'] as num? ?? 0).toInt(),
+        paymentType: j['payment_type'] as String?,
+        dueDate: j['due_date'] as String?,
       );
 }
 

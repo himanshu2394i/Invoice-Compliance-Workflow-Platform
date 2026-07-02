@@ -156,7 +156,7 @@ class _ShellScaffoldState extends State<ShellScaffold> {
       },
       child: PopScope(
         canPop: false,
-        onPopInvoked: (didPop) {
+        onPopInvokedWithResult: (didPop, _) {
           if (didPop) return;
           _handleBack();
         },

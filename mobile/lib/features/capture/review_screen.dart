@@ -6,8 +6,10 @@ import 'package:go_router/go_router.dart';
 import '../../core/api/api_client.dart';
 import '../../core/api/endpoints.dart';
 import '../../core/models/buyer_requirement.dart';
+import '../../core/models/master_data.dart';
 import 'bundle_provider.dart';
 import 'camera_screen.dart'; // CameraTarget
+import 'series_detect.dart';
 
 final reviewDioProvider = Provider<Dio>((ref) => buildDio());
 final ocrPreviewProvider = Provider<Future<InvoiceOCRPreview> Function(String)>(
@@ -97,6 +99,14 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
   Set<String> _ocrFilledFields = {};
   List<Buyer> _buyers = [];
 
+  // Distributor-domain capture fields
+  final _termsCtrl = TextEditingController();
+  String _paymentType = 'CASH'; // what's printed on the invoice: CASH | CREDIT
+  List<SeriesEntry> _seriesRegistry = [];
+  SeriesEntry? _detectedSeries;
+  List<BuyerBranch> _buyerBranches = [];
+  String? _selectedBranchId;
+
   @override
   void initState() {
     super.initState();
@@ -104,9 +114,57 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
     _invDateCtrl.text =
         '${today.year.toString().padLeft(4, '0')}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
     _loadBuyers();
+    _loadSeriesRegistry();
+    _invNumCtrl.addListener(_detectSeriesFromNumber);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _runOCRPreviewIfPossible();
     });
+  }
+
+  Future<void> _loadSeriesRegistry() async {
+    try {
+      final dio = ref.read(reviewDioProvider);
+      final resp = await dio.get(Endpoints.seriesRegistry);
+      final list = ((resp.data['series'] as List?) ?? const [])
+          .map((j) => SeriesEntry.fromJson(j as Map<String, dynamic>))
+          .toList();
+      if (mounted) {
+        setState(() => _seriesRegistry = list);
+        _detectSeriesFromNumber();
+      }
+    } catch (_) {
+      // Non-fatal: series detection simply stays off while offline.
+    }
+  }
+
+  void _detectSeriesFromNumber() {
+    final hit = detectSeries(_invNumCtrl.text, _seriesRegistry);
+    if (hit?.id != _detectedSeries?.id && mounted) {
+      setState(() => _detectedSeries = hit);
+    }
+  }
+
+  Future<void> _loadBuyerBranches(String buyerId) async {
+    try {
+      final dio = ref.read(reviewDioProvider);
+      final resp = await dio.get(Endpoints.buyerBranches(buyerId));
+      final list = ((resp.data['branches'] as List?) ?? const [])
+          .map((j) => BuyerBranch.fromJson(j as Map<String, dynamic>))
+          .toList();
+      if (mounted) {
+        setState(() {
+          _buyerBranches = list;
+          _selectedBranchId = null;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _buyerBranches = [];
+          _selectedBranchId = null;
+        });
+      }
+    }
   }
 
   Future<void> _loadBuyers() async {
@@ -125,6 +183,12 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
   void _selectBuyer(Buyer buyer) {
     _buyerGstinCtrl.text = buyer.gstin;
     _buyerNameCtrl.text = buyer.name;
+    // Prefill credit terms from the buyer's default; branches drive the
+    // delivery-location picker below.
+    if (buyer.defaultPaymentTermsDays != null && _termsCtrl.text.isEmpty) {
+      _termsCtrl.text = buyer.defaultPaymentTermsDays.toString();
+    }
+    _loadBuyerBranches(buyer.id);
     _lookupBuyer();
   }
 
@@ -225,12 +289,14 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
 
   @override
   void dispose() {
+    _invNumCtrl.removeListener(_detectSeriesFromNumber);
     _invNumCtrl.dispose();
     _buyerGstinCtrl.dispose();
     _buyerNameCtrl.dispose();
     _invDateCtrl.dispose();
     _taxableCtrl.dispose();
     _totalCtrl.dispose();
+    _termsCtrl.dispose();
     super.dispose();
   }
 
@@ -257,6 +323,7 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
   void _proceed() {
     if (!_formKey.currentState!.validate()) return;
     if (ref.read(bundleProvider).invoicePhotoPaths.isEmpty) return;
+    final terms = int.tryParse(_termsCtrl.text.trim());
     ref.read(bundleProvider.notifier).updateInvoiceFields(
           invoiceNumber: _invNumCtrl.text.trim(),
           entityGstin: _entityGstin,
@@ -265,6 +332,11 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
           invoiceDate: _invDateCtrl.text.trim(),
           taxableAmount: double.tryParse(_taxableCtrl.text) ?? 0,
           totalAmount: double.tryParse(_totalCtrl.text) ?? 0,
+          paymentType: _paymentType,
+          paymentTermsDays: _paymentType == 'CREDIT' ? terms : null,
+          clearPaymentTerms: _paymentType != 'CREDIT' || terms == null,
+          buyerBranchId: _selectedBranchId,
+          clearBuyerBranch: _selectedBranchId == null,
         );
     context.go('/capture/checklist');
   }
@@ -520,6 +592,27 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
                       hint: 'A26/001',
                       ocrFieldKey: 'invoice_number',
                     ),
+                    if (_detectedSeries != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: Chip(
+                            avatar: const Icon(Icons.auto_awesome, size: 16),
+                            label: Text(
+                              [
+                                _detectedSeries!.seriesPrefix,
+                                if (_detectedSeries!.principalName != null)
+                                  _detectedSeries!.principalName!,
+                                if (_detectedSeries!.entityName != null)
+                                  _detectedSeries!.entityName!,
+                              ].join(' • '),
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                            visualDensity: VisualDensity.compact,
+                          ),
+                        ),
+                      ),
                     const SizedBox(height: 12),
 
                     // Search buyer by name — picks from the known buyer list and
@@ -587,6 +680,80 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
                         ctrl: _buyerNameCtrl,
                         label: 'Buyer Name',
                         hint: 'Vishal Mega Mart'),
+                    const SizedBox(height: 12),
+
+                    // Delivery branch — only when the buyer has branches
+                    // (Vishal stores, Flipkart/Zepto warehouses).
+                    if (_buyerBranches.isNotEmpty) ...[
+                      DropdownButtonFormField<String>(
+                        initialValue: _selectedBranchId,
+                        decoration: const InputDecoration(
+                          labelText: 'Delivery branch / store (optional)',
+                          border: OutlineInputBorder(),
+                        ),
+                        items: [
+                          const DropdownMenuItem<String>(
+                            value: null,
+                            child: Text('Not specified'),
+                          ),
+                          for (final b in _buyerBranches)
+                            DropdownMenuItem(
+                              value: b.id,
+                              child: Text(b.code == null
+                                  ? b.name
+                                  : '${b.name} (${b.code})'),
+                            ),
+                        ],
+                        onChanged: (v) =>
+                            setState(() => _selectedBranchId = v),
+                      ),
+                      const SizedBox(height: 12),
+                    ],
+
+                    // Payment type as printed on the invoice; CREDIT gets
+                    // terms (prefilled from the buyer's default).
+                    Row(
+                      children: [
+                        Expanded(
+                          child: SegmentedButton<String>(
+                            segments: const [
+                              ButtonSegment(
+                                  value: 'CASH', label: Text('Cash')),
+                              ButtonSegment(
+                                  value: 'CREDIT', label: Text('Credit')),
+                            ],
+                            selected: {_paymentType},
+                            onSelectionChanged: (s) =>
+                                setState(() => _paymentType = s.first),
+                            showSelectedIcon: false,
+                          ),
+                        ),
+                        if (_paymentType == 'CREDIT') ...[
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: TextFormField(
+                              controller: _termsCtrl,
+                              keyboardType: TextInputType.number,
+                              decoration: const InputDecoration(
+                                labelText: 'Terms (days)',
+                                border: OutlineInputBorder(),
+                              ),
+                              validator: (v) {
+                                if (_paymentType != 'CREDIT') return null;
+                                if (v == null || v.trim().isEmpty) {
+                                  return null; // buyer default applies
+                                }
+                                final days = int.tryParse(v.trim());
+                                if (days == null || days < 0) {
+                                  return 'Invalid';
+                                }
+                                return null;
+                              },
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
                     const SizedBox(height: 12),
 
                     _field(
