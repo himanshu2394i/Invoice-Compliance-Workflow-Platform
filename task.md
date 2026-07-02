@@ -164,5 +164,13 @@ business documented in `invoice_extraction.md`.
   invoice-detail payment history/balance.
 - `[x]` Verified: full backend suite green against Docker Postgres+Temporal;
   47+ mobile tests green; analyzer at the 27-issue baseline.
-- `[ ]` Deploy migration 000009 + new API to the pilot EC2 server and
-  rebuild/sideload the APK (not done from this session).
+- `[x]` Deploy to pilot EC2 (2026-07-02): shipped tracked backend/deploy
+  files via tarball to `~/meridian`, rebuilt api/worker/ocr-worker/migrate
+  images, migrated DB 6 → 9 (clean), restarted stack. Verified live:
+  principals + all 11 series seeded for the real org, receivables and
+  sales-report endpoints responding. Note: SSH SG rule for the old home IP
+  122.177.103.185/32 is stale (current IP rule added 2026-07-02) — remove
+  the old one when convenient.
+- `[x]` Release APK built (`mobile/build/app/outputs/flutter-apk/app-release.apk`,
+  56.8MB, defaults to the live server URL). **Still to do: sideload onto the
+  pilot device.**
