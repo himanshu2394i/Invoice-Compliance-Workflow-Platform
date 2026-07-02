@@ -124,8 +124,17 @@ type Invoice struct {
 	TaxAmount      float64   `json:"tax_amount"`
 	Currency       string    `json:"currency"`
 	CurrentState   string    `json:"current_state"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	// Distributor-domain fields (migration 000009). All nullable: legacy
+	// invoices predate them, and receivables math skips NULL payment_type.
+	PrincipalID      *string    `json:"principal_id,omitempty"`
+	BuyerBranchID    *string    `json:"buyer_branch_id,omitempty"`
+	PaymentType      *string    `json:"payment_type,omitempty"` // CASH | CREDIT
+	PaymentTermsDays *int       `json:"payment_terms_days,omitempty"`
+	DueDate          *time.Time `json:"due_date,omitempty"`
+	Salesman         *string    `json:"salesman,omitempty"`
+	Beat             *string    `json:"beat,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
 }
 
 // Buyer is who an invoice is issued TO -- distinct from Vendor, which models
@@ -140,7 +149,11 @@ type Buyer struct {
 	Name           string          `json:"name"`
 	GSTIN          string          `json:"gstin"`
 	Address        json.RawMessage `json:"address"`
-	CreatedAt      time.Time       `json:"created_at"`
+	// GT | MT | ECOM | HOSPITALITY | INDUSTRIAL — the sales channel named in
+	// Meridian's own systems (confirmed by invoice_extraction.md entry 19).
+	SalesChannel            *string   `json:"sales_channel,omitempty"`
+	DefaultPaymentTermsDays *int      `json:"default_payment_terms_days,omitempty"`
+	CreatedAt               time.Time `json:"created_at"`
 }
 
 type Document struct {
@@ -386,8 +399,8 @@ func (r *Repository) GetBuyerByGSTIN(ctx context.Context, tenantID, gstin string
 	var b Buyer
 	err := r.WithTx(ctx, tenantID, func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx,
-			"SELECT id, organization_id, name, gstin, address, created_at FROM buyers WHERE gstin = $1",
-			gstin).Scan(&b.ID, &b.OrganizationID, &b.Name, &b.GSTIN, &b.Address, &b.CreatedAt)
+			"SELECT id, organization_id, name, gstin, address, sales_channel, default_payment_terms_days, created_at FROM buyers WHERE gstin = $1",
+			gstin).Scan(&b.ID, &b.OrganizationID, &b.Name, &b.GSTIN, &b.Address, &b.SalesChannel, &b.DefaultPaymentTermsDays, &b.CreatedAt)
 	})
 	if err != nil {
 		return nil, err
@@ -399,8 +412,8 @@ func (r *Repository) GetBuyerByID(ctx context.Context, tenantID, buyerID string)
 	var b Buyer
 	err := r.WithTx(ctx, tenantID, func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx,
-			"SELECT id, organization_id, name, gstin, address, created_at FROM buyers WHERE id = $1",
-			buyerID).Scan(&b.ID, &b.OrganizationID, &b.Name, &b.GSTIN, &b.Address, &b.CreatedAt)
+			"SELECT id, organization_id, name, gstin, address, sales_channel, default_payment_terms_days, created_at FROM buyers WHERE id = $1",
+			buyerID).Scan(&b.ID, &b.OrganizationID, &b.Name, &b.GSTIN, &b.Address, &b.SalesChannel, &b.DefaultPaymentTermsDays, &b.CreatedAt)
 	})
 	if err != nil {
 		return nil, err
@@ -411,14 +424,14 @@ func (r *Repository) GetBuyerByID(ctx context.Context, tenantID, buyerID string)
 func (r *Repository) ListBuyers(ctx context.Context, tenantID string) ([]*Buyer, error) {
 	var list []*Buyer
 	err := r.WithTx(ctx, tenantID, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, "SELECT id, organization_id, name, gstin, address, created_at FROM buyers ORDER BY name ASC")
+		rows, err := tx.Query(ctx, "SELECT id, organization_id, name, gstin, address, sales_channel, default_payment_terms_days, created_at FROM buyers ORDER BY name ASC")
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var b Buyer
-			if err := rows.Scan(&b.ID, &b.OrganizationID, &b.Name, &b.GSTIN, &b.Address, &b.CreatedAt); err != nil {
+			if err := rows.Scan(&b.ID, &b.OrganizationID, &b.Name, &b.GSTIN, &b.Address, &b.SalesChannel, &b.DefaultPaymentTermsDays, &b.CreatedAt); err != nil {
 				return err
 			}
 			list = append(list, &b)
@@ -473,18 +486,18 @@ func (r *Repository) CreateInvoice(ctx context.Context, tenantID string, inv *In
 		inv.OrganizationID = tenantID
 		inv.CurrentState = "INGESTED"
 		err := tx.QueryRow(ctx,
-			`INSERT INTO invoices (id, organization_id, entity_id, vendor_id, buyer_id, invoice_series, invoice_number, invoice_date, gross_amount, tax_amount, currency, current_state)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING created_at, updated_at`,
-			inv.ID, inv.OrganizationID, inv.EntityID, inv.VendorID, inv.BuyerID, inv.InvoiceSeries, inv.InvoiceNumber, inv.InvoiceDate, inv.GrossAmount, inv.TaxAmount, inv.Currency, inv.CurrentState).
+			`INSERT INTO invoices (id, organization_id, entity_id, vendor_id, buyer_id, invoice_series, invoice_number, invoice_date, gross_amount, tax_amount, currency, current_state, principal_id, buyer_branch_id, payment_type, payment_terms_days, due_date, salesman, beat)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) RETURNING created_at, updated_at`,
+			inv.ID, inv.OrganizationID, inv.EntityID, inv.VendorID, inv.BuyerID, inv.InvoiceSeries, inv.InvoiceNumber, inv.InvoiceDate, inv.GrossAmount, inv.TaxAmount, inv.Currency, inv.CurrentState, inv.PrincipalID, inv.BuyerBranchID, inv.PaymentType, inv.PaymentTermsDays, inv.DueDate, inv.Salesman, inv.Beat).
 			Scan(&inv.CreatedAt, &inv.UpdatedAt)
 		return err
 	})
 }
 
-const invoiceColumns = "id, organization_id, entity_id, vendor_id, buyer_id, invoice_series, invoice_number, invoice_date, gross_amount, tax_amount, currency, current_state, created_at, updated_at"
+const invoiceColumns = "id, organization_id, entity_id, vendor_id, buyer_id, invoice_series, invoice_number, invoice_date, gross_amount, tax_amount, currency, current_state, principal_id, buyer_branch_id, payment_type, payment_terms_days, due_date, salesman, beat, created_at, updated_at"
 
 func scanInvoice(row pgx.Row, inv *Invoice) error {
-	return row.Scan(&inv.ID, &inv.OrganizationID, &inv.EntityID, &inv.VendorID, &inv.BuyerID, &inv.InvoiceSeries, &inv.InvoiceNumber, &inv.InvoiceDate, &inv.GrossAmount, &inv.TaxAmount, &inv.Currency, &inv.CurrentState, &inv.CreatedAt, &inv.UpdatedAt)
+	return row.Scan(&inv.ID, &inv.OrganizationID, &inv.EntityID, &inv.VendorID, &inv.BuyerID, &inv.InvoiceSeries, &inv.InvoiceNumber, &inv.InvoiceDate, &inv.GrossAmount, &inv.TaxAmount, &inv.Currency, &inv.CurrentState, &inv.PrincipalID, &inv.BuyerBranchID, &inv.PaymentType, &inv.PaymentTermsDays, &inv.DueDate, &inv.Salesman, &inv.Beat, &inv.CreatedAt, &inv.UpdatedAt)
 }
 
 func (r *Repository) GetInvoice(ctx context.Context, tenantID, invoiceID string) (*Invoice, error) {
@@ -1371,7 +1384,7 @@ func (r *Repository) SetDisputeCreditNote(ctx context.Context, tenantID, dispute
 // open the dashboard and check both lists separately.
 
 type AlertItem struct {
-	Type          string    `json:"type"` // "exception" | "dispute"
+	Type          string    `json:"type"` // "exception" | "dispute" | "overdue_invoice"
 	InvoiceID     string    `json:"invoice_id"`
 	InvoiceNumber string    `json:"invoice_number"`
 	Subtype       string    `json:"subtype"` // exception_type or dispute_type
@@ -1390,6 +1403,17 @@ func (r *Repository) GetOpenAlerts(ctx context.Context, tenantID string) ([]*Ale
 			SELECT 'dispute', d.invoice_id, i.invoice_number, d.dispute_type, d.description, d.created_at
 			FROM invoice_disputes d JOIN invoices i ON i.id = d.invoice_id
 			WHERE d.status IN ('OPEN', 'OWNER_REVIEWING')
+			UNION ALL
+			SELECT 'overdue_invoice', i.id, i.invoice_number, 'OVERDUE_INVOICE',
+			       'Payment overdue: balance ' || ROUND((i.gross_amount - COALESCE(p.paid, 0))::numeric, 2)::text ||
+			       ' was due ' || i.due_date::text,
+			       i.due_date::timestamptz
+			FROM invoices i
+			LEFT JOIN (SELECT invoice_id, SUM(amount) AS paid FROM invoice_payments GROUP BY invoice_id) p
+			  ON p.invoice_id = i.id
+			WHERE i.payment_type = 'CREDIT'
+			  AND i.due_date IS NOT NULL AND i.due_date < CURRENT_DATE
+			  AND i.gross_amount - COALESCE(p.paid, 0) > 0.005
 			ORDER BY 6 DESC`)
 		if err != nil {
 			return err
