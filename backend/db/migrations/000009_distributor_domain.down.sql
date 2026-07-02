@@ -1,0 +1,16 @@
+DROP TABLE IF EXISTS invoice_payments;
+DROP INDEX IF EXISTS idx_invoices_receivable;
+ALTER TABLE invoices DROP CONSTRAINT IF EXISTS invoices_payment_type_check;
+ALTER TABLE invoices DROP COLUMN IF EXISTS beat;
+ALTER TABLE invoices DROP COLUMN IF EXISTS salesman;
+ALTER TABLE invoices DROP COLUMN IF EXISTS due_date;
+ALTER TABLE invoices DROP COLUMN IF EXISTS payment_terms_days;
+ALTER TABLE invoices DROP COLUMN IF EXISTS payment_type;
+ALTER TABLE invoices DROP COLUMN IF EXISTS buyer_branch_id;
+ALTER TABLE invoices DROP COLUMN IF EXISTS principal_id;
+ALTER TABLE buyers DROP CONSTRAINT IF EXISTS buyers_sales_channel_check;
+ALTER TABLE buyers DROP COLUMN IF EXISTS default_payment_terms_days;
+ALTER TABLE buyers DROP COLUMN IF EXISTS sales_channel;
+DROP TABLE IF EXISTS buyer_branches;
+DROP TABLE IF EXISTS invoice_series_registry;
+DROP TABLE IF EXISTS principals;
