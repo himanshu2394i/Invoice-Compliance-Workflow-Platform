@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'auth_provider.dart';
-import '../../core/config/server_config.dart';
+import '../../core/navigation/app_shell.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
@@ -34,7 +34,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     final auth = ref.watch(authProvider);
 
     ref.listen<AuthState>(authProvider, (_, next) {
-      if (next.isLoggedIn) context.go('/home');
+      if (next.isLoggedIn) {
+        context.go(homeLocationForRole(next.user?['role'] as String?));
+      }
     });
 
     return Scaffold(

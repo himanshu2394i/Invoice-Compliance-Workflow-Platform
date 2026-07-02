@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import '../../core/navigation/app_back.dart';
 import '../auth/auth_provider.dart';
+import '../capture/bundle_provider.dart';
+import '../capture/camera_screen.dart';
 import 'owner_provider.dart';
 
 class OwnerDashboardScreen extends ConsumerWidget {
@@ -14,42 +15,34 @@ class OwnerDashboardScreen extends ConsumerWidget {
     final invoicesAsync = ref.watch(ownerInvoicesProvider);
     final user = ref.watch(currentUserProvider);
 
-    return AppBackScope(
-      fallbackLocation: '/home',
-      child: Scaffold(
+    // Tab root inside the owner shell: no back affordance, the shell
+    // handles back and exit. Admin screens moved to the More tab.
+    return Scaffold(
         appBar: AppBar(
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back),
-            tooltip: 'Back',
-            onPressed: () => AppBackScope.goBack(
-              context,
-              fallbackLocation: '/home',
-            ),
-          ),
-          title: const Text('Owner Dashboard'),
+          title: const Text('Dashboard'),
           actions: [
-            if (user?['role'] == 'ADMIN') ...[
+            if (user?['role'] == 'ADMIN' || user?['role'] == 'MANAGER')
               IconButton(
-                icon: const Icon(Icons.checklist_outlined),
-                tooltip: 'Manage buyer document requirements',
-                onPressed: () => context.push('/admin/buyer-requirements'),
+                icon: const Icon(Icons.camera_alt_outlined),
+                tooltip: 'Capture invoice',
+                onPressed: () {
+                  ref.read(bundleProvider.notifier).reset();
+                  context.push(
+                    '/capture/camera',
+                    extra: const CameraTarget(
+                      documentType: 'INVOICE',
+                      label: 'Tax Invoice',
+                      isPrimary: true,
+                    ),
+                  );
+                },
               ),
-              IconButton(
-                icon: const Icon(Icons.rule_outlined),
-                tooltip: 'Approval rules',
-                onPressed: () => context.push('/admin/rules'),
-              ),
-            ],
             IconButton(
               icon: const Icon(Icons.refresh),
               onPressed: () {
                 ref.invalidate(ownerDashboardProvider);
                 ref.invalidate(ownerInvoicesProvider);
               },
-            ),
-            IconButton(
-              icon: const Icon(Icons.logout),
-              onPressed: () => ref.read(authProvider.notifier).logout(),
             ),
           ],
         ),
@@ -169,7 +162,6 @@ class OwnerDashboardScreen extends ConsumerWidget {
             ],
           ),
         ),
-      ),
     );
   }
 

@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/models/bundle.dart';
-import '../../core/navigation/app_back.dart';
 import '../../core/storage/hive_service.dart';
 import '../capture/sync_service.dart';
 
@@ -61,18 +60,9 @@ class _QueueScreenState extends ConsumerState<QueueScreen> {
     final bundles = HiveService.allBundles();
     final pending = bundles.where((b) => b.status != 'synced').length;
 
-    return AppBackScope(
-      fallbackLocation: '/home',
-      child: Scaffold(
+    // Tab root inside a shell: no back affordance, the shell handles it.
+    return Scaffold(
         appBar: AppBar(
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back),
-            tooltip: 'Back',
-            onPressed: () => AppBackScope.goBack(
-              context,
-              fallbackLocation: '/home',
-            ),
-          ),
           title: const Text('Upload Queue'),
           actions: [
             if (pending > 0)
@@ -151,7 +141,6 @@ class _QueueScreenState extends ConsumerState<QueueScreen> {
                   );
                 },
               ),
-      ),
     );
   }
 }

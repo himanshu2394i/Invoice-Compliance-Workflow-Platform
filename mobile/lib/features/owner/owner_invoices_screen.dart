@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import '../../core/navigation/app_back.dart';
 import 'owner_provider.dart';
 
 List<OwnerInvoice> filterOwnerInvoices(
@@ -47,18 +46,10 @@ class _OwnerInvoicesScreenState extends ConsumerState<OwnerInvoicesScreen> {
   Widget build(BuildContext context) {
     final invoicesAsync = ref.watch(ownerInvoicesProvider);
 
-    return AppBackScope(
-      fallbackLocation: '/owner',
-      child: Scaffold(
+    // Tab root inside the owner shell: no back affordance, the shell
+    // handles it.
+    return Scaffold(
         appBar: AppBar(
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back),
-            tooltip: 'Back',
-            onPressed: () => AppBackScope.goBack(
-              context,
-              fallbackLocation: '/owner',
-            ),
-          ),
           title: const Text('All Invoices'),
           actions: [
             IconButton(
@@ -89,7 +80,6 @@ class _OwnerInvoicesScreenState extends ConsumerState<OwnerInvoicesScreen> {
           ),
           data: _buildInvoices,
         ),
-      ),
     );
   }
 

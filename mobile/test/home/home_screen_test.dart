@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:hive/hive.dart';
 import 'package:invoice_capture/core/models/bundle.dart';
+import 'package:invoice_capture/core/navigation/app_shell.dart';
 import 'package:invoice_capture/features/auth/auth_provider.dart';
 import 'package:invoice_capture/features/home/home_screen.dart';
 
@@ -29,20 +30,31 @@ void main() {
     await tempDir.delete(recursive: true);
   });
 
-  Future<void> pumpHomeAsRole(WidgetTester tester, String role) async {
+  /// Pumps HomeScreen inside the real worker shell, the way the app mounts
+  /// it, so back behavior and tab chrome are exercised together.
+  Future<void> pumpWorkerHome(WidgetTester tester) async {
     final router = GoRouter(
       initialLocation: '/home',
       routes: [
-        GoRoute(path: '/home', builder: (_, __) => const HomeScreen()),
-        GoRoute(
-            path: '/owner',
-            builder: (_, __) => const Scaffold(body: Text('Owner'))),
-        GoRoute(
-            path: '/queue',
-            builder: (_, __) => const Scaffold(body: Text('Queue'))),
-        GoRoute(
-            path: '/my-invoices',
-            builder: (_, __) => const Scaffold(body: Text('My Invoices'))),
+        StatefulShellRoute.indexedStack(
+          builder: (_, __, shell) => WorkerShell(navigationShell: shell),
+          branches: [
+            StatefulShellBranch(routes: [
+              GoRoute(path: '/home', builder: (_, __) => const HomeScreen()),
+            ]),
+            StatefulShellBranch(routes: [
+              GoRoute(
+                  path: '/queue',
+                  builder: (_, __) => const Scaffold(body: Text('Queue stub'))),
+            ]),
+            StatefulShellBranch(routes: [
+              GoRoute(
+                  path: '/my-invoices',
+                  builder: (_, __) =>
+                      const Scaffold(body: Text('My invoices stub'))),
+            ]),
+          ],
+        ),
         GoRoute(
             path: '/settings',
             builder: (_, __) => const Scaffold(body: Text('Settings'))),
@@ -59,7 +71,7 @@ void main() {
             (_) => AuthNotifier(
               initialState: AuthState(
                 isLoggedIn: true,
-                user: {'full_name': '$role User', 'role': role},
+                user: {'full_name': 'Worker User', 'role': 'WORKER'},
               ),
             ),
           ),
@@ -70,28 +82,25 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  testWidgets('finance users can navigate to the review dashboard',
+  testWidgets('worker home shows the capture action and tab bar',
       (tester) async {
-    await pumpHomeAsRole(tester, 'FINANCE');
+    await pumpWorkerHome(tester);
 
-    expect(find.text('Owner Dashboard'), findsOneWidget);
-  });
-
-  testWidgets('reviewer users can navigate to the review dashboard',
-      (tester) async {
-    await pumpHomeAsRole(tester, 'REVIEWER');
-
-    expect(find.text('Owner Dashboard'), findsOneWidget);
+    expect(find.text('Capture Invoice'), findsOneWidget);
+    expect(find.text('Welcome, Worker User'), findsOneWidget);
+    // Shell tabs are present.
+    expect(find.text('Queue'), findsOneWidget);
+    expect(find.text('My Invoices'), findsOneWidget);
   });
 
   testWidgets('home requires two Android back presses before exit',
       (tester) async {
-    await pumpHomeAsRole(tester, 'WORKER');
+    await pumpWorkerHome(tester);
 
     await tester.binding.handlePopRoute();
     await tester.pump();
 
     expect(find.text('Press back again to exit'), findsOneWidget);
-    expect(find.text('Invoice Capture'), findsWidgets);
+    expect(find.text('Capture Invoice'), findsOneWidget);
   });
 }

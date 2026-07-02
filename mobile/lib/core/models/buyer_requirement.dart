@@ -2,13 +2,24 @@ class Buyer {
   final String id;
   final String name;
   final String gstin;
+  final String? salesChannel; // GT | MT | ECOM | HOSPITALITY | INDUSTRIAL
+  final int? defaultPaymentTermsDays;
 
-  const Buyer({required this.id, required this.name, required this.gstin});
+  const Buyer({
+    required this.id,
+    required this.name,
+    required this.gstin,
+    this.salesChannel,
+    this.defaultPaymentTermsDays,
+  });
 
   factory Buyer.fromJson(Map<String, dynamic> json) => Buyer(
         id: json['id'] as String,
         name: json['name'] as String? ?? '',
         gstin: json['gstin'] as String? ?? '',
+        salesChannel: json['sales_channel'] as String?,
+        defaultPaymentTermsDays:
+            (json['default_payment_terms_days'] as num?)?.toInt(),
       );
 }
 

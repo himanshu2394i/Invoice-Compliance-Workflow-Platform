@@ -1,7 +1,7 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import '../../core/navigation/app_back.dart';
+
 import 'owner_provider.dart';
 
 class AlertsScreen extends ConsumerWidget {
@@ -18,18 +18,10 @@ class AlertsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final alertsAsync = ref.watch(ownerAlertsProvider);
 
-    return AppBackScope(
-      fallbackLocation: '/home',
-      child: Scaffold(
+    // Tab root inside the owner shell: no back affordance, the shell
+    // handles it.
+    return Scaffold(
         appBar: AppBar(
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back),
-            tooltip: 'Back',
-            onPressed: () => AppBackScope.goBack(
-              context,
-              fallbackLocation: '/home',
-            ),
-          ),
           title: const Text('Alerts'),
           actions: [
             IconButton(
@@ -87,7 +79,6 @@ class AlertsScreen extends ConsumerWidget {
                   ),
                 ),
         ),
-      ),
     );
   }
 }

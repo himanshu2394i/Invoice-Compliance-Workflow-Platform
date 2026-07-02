@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../core/api/api_client.dart';
 import '../../core/api/endpoints.dart';
-import '../../core/navigation/app_back.dart';
 
 /// Lets a worker see what happened to an invoice after they synced it --
 /// the local queue only tracks upload status, not the backend's approval/
@@ -84,18 +83,10 @@ class _MyInvoicesScreenState extends State<MyInvoicesScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return AppBackScope(
-      fallbackLocation: '/home',
-      child: Scaffold(
+    // Tab root inside the worker shell: no back affordance, the shell
+    // handles it.
+    return Scaffold(
         appBar: AppBar(
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back),
-            tooltip: 'Back',
-            onPressed: () => AppBackScope.goBack(
-              context,
-              fallbackLocation: '/home',
-            ),
-          ),
           title: const Text('My Invoices'),
           actions: [
             IconButton(icon: const Icon(Icons.refresh), onPressed: _load),
@@ -143,7 +134,6 @@ class _MyInvoicesScreenState extends State<MyInvoicesScreen> {
                           },
                         ),
                       ),
-      ),
     );
   }
 }
