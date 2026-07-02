@@ -15,6 +15,9 @@ class CaptureSession {
   final String invoiceDate;
   final double taxableAmount;
   final double totalAmount;
+  final String paymentType; // '' | 'CASH' | 'CREDIT'
+  final int? paymentTermsDays;
+  final String? buyerBranchId;
   final List<BuyerRequirement>
       requiredDocs; // populated after buyer GSTIN lookup
   final List<QueuedPhoto> additionalPhotos; // supporting docs captured so far
@@ -31,6 +34,9 @@ class CaptureSession {
     this.invoiceDate = '',
     this.taxableAmount = 0,
     this.totalAmount = 0,
+    this.paymentType = '',
+    this.paymentTermsDays,
+    this.buyerBranchId,
     this.requiredDocs = const [],
     this.additionalPhotos = const [],
     this.isSaving = false,
@@ -46,6 +52,11 @@ class CaptureSession {
     String? invoiceDate,
     double? taxableAmount,
     double? totalAmount,
+    String? paymentType,
+    int? paymentTermsDays,
+    bool clearPaymentTerms = false,
+    String? buyerBranchId,
+    bool clearBuyerBranch = false,
     List<BuyerRequirement>? requiredDocs,
     List<QueuedPhoto>? additionalPhotos,
     bool? isSaving,
@@ -61,6 +72,12 @@ class CaptureSession {
         invoiceDate: invoiceDate ?? this.invoiceDate,
         taxableAmount: taxableAmount ?? this.taxableAmount,
         totalAmount: totalAmount ?? this.totalAmount,
+        paymentType: paymentType ?? this.paymentType,
+        paymentTermsDays: clearPaymentTerms
+            ? null
+            : (paymentTermsDays ?? this.paymentTermsDays),
+        buyerBranchId:
+            clearBuyerBranch ? null : (buyerBranchId ?? this.buyerBranchId),
         requiredDocs: requiredDocs ?? this.requiredDocs,
         additionalPhotos: additionalPhotos ?? this.additionalPhotos,
         isSaving: isSaving ?? this.isSaving,
@@ -103,6 +120,9 @@ class CaptureSession {
       photos: photos,
       status: 'pending',
       createdAtMs: DateTime.now().millisecondsSinceEpoch,
+      paymentType: paymentType.isEmpty ? null : paymentType,
+      paymentTermsDays: paymentType == 'CREDIT' ? paymentTermsDays : null,
+      buyerBranchId: buyerBranchId,
     );
   }
 }
@@ -134,6 +154,11 @@ class BundleNotifier extends StateNotifier<CaptureSession> {
     String? invoiceDate,
     double? taxableAmount,
     double? totalAmount,
+    String? paymentType,
+    int? paymentTermsDays,
+    bool clearPaymentTerms = false,
+    String? buyerBranchId,
+    bool clearBuyerBranch = false,
   }) {
     state = state.copyWith(
       invoiceNumber: invoiceNumber,
@@ -143,6 +168,11 @@ class BundleNotifier extends StateNotifier<CaptureSession> {
       invoiceDate: invoiceDate,
       taxableAmount: taxableAmount,
       totalAmount: totalAmount,
+      paymentType: paymentType,
+      paymentTermsDays: paymentTermsDays,
+      clearPaymentTerms: clearPaymentTerms,
+      buyerBranchId: buyerBranchId,
+      clearBuyerBranch: clearBuyerBranch,
     );
   }
 

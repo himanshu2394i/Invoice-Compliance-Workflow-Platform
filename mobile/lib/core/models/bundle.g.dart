@@ -82,13 +82,18 @@ class QueuedBundleAdapter extends TypeAdapter<QueuedBundle> {
       syncError: fields[10] as String?,
       createdAtMs: fields[11] as int,
       remoteInvoiceId: fields[12] as String?,
+      paymentType: fields[13] as String?,
+      paymentTermsDays: fields[14] as int?,
+      buyerBranchId: fields[15] as String?,
+      salesman: fields[16] as String?,
+      beat: fields[17] as String?,
     );
   }
 
   @override
   void write(BinaryWriter writer, QueuedBundle obj) {
     writer
-      ..writeByte(13)
+      ..writeByte(18)
       ..writeByte(0)
       ..write(obj.localId)
       ..writeByte(1)
@@ -114,7 +119,17 @@ class QueuedBundleAdapter extends TypeAdapter<QueuedBundle> {
       ..writeByte(11)
       ..write(obj.createdAtMs)
       ..writeByte(12)
-      ..write(obj.remoteInvoiceId);
+      ..write(obj.remoteInvoiceId)
+      ..writeByte(13)
+      ..write(obj.paymentType)
+      ..writeByte(14)
+      ..write(obj.paymentTermsDays)
+      ..writeByte(15)
+      ..write(obj.buyerBranchId)
+      ..writeByte(16)
+      ..write(obj.salesman)
+      ..writeByte(17)
+      ..write(obj.beat);
   }
 
   @override

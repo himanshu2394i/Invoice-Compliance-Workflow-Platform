@@ -86,6 +86,12 @@ class SyncService {
       'invoice_date': bundle.invoiceDate,
       'taxable_amount': bundle.taxableAmount.toString(),
       'total_amount': bundle.totalAmount.toString(),
+      if (bundle.paymentType != null) 'payment_type': bundle.paymentType,
+      if (bundle.paymentTermsDays != null)
+        'payment_terms_days': bundle.paymentTermsDays.toString(),
+      if (bundle.buyerBranchId != null) 'buyer_branch_id': bundle.buyerBranchId,
+      if (bundle.salesman != null) 'salesman': bundle.salesman,
+      if (bundle.beat != null) 'beat': bundle.beat,
       'file': await MultipartFile.fromFile(
         primary.localPath,
         filename: '${bundle.invoiceNumber}.jpg',

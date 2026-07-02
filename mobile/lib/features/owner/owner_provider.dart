@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 import '../../core/api/api_client.dart';
 import '../../core/api/endpoints.dart';
+import '../../core/models/master_data.dart';
+import '../../core/models/receivables.dart';
 
 // ─── Data Models ─────────────────────────────────────────────────────────────
 
@@ -424,6 +426,142 @@ class OwnerService {
     );
     return savePath;
   }
+
+  // ─── Receivables + Payments ────────────────────────────────────────────────
+
+  Future<ReceivablesSummary> getReceivables() async {
+    final resp = await _dio.get(Endpoints.receivables);
+    return ReceivablesSummary.fromJson(resp.data as Map<String, dynamic>);
+  }
+
+  Future<List<ReceivableInvoice>> getBuyerReceivables(String buyerId) async {
+    final resp = await _dio.get(Endpoints.buyerReceivables(buyerId));
+    return ((resp.data['invoices'] as List?) ?? const [])
+        .map((j) => ReceivableInvoice.fromJson(j as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<PaymentRecord> recordPayment({
+    required String invoiceId,
+    required double amount,
+    required String mode,
+    String? paidOn,
+    String? reference,
+    String? notes,
+  }) async {
+    final resp = await _dio.post(Endpoints.invoicePayments(invoiceId), data: {
+      'amount': amount,
+      'mode': mode,
+      if (paidOn != null) 'paid_on': paidOn,
+      if (reference != null && reference.isNotEmpty) 'reference': reference,
+      if (notes != null && notes.isNotEmpty) 'notes': notes,
+    });
+    return PaymentRecord.fromJson(resp.data as Map<String, dynamic>);
+  }
+
+  Future<List<PaymentRecord>> listPayments(String invoiceId) async {
+    final resp = await _dio.get(Endpoints.invoicePayments(invoiceId));
+    return ((resp.data['payments'] as List?) ?? const [])
+        .map((j) => PaymentRecord.fromJson(j as Map<String, dynamic>))
+        .toList();
+  }
+
+  // ─── Sales Reports ─────────────────────────────────────────────────────────
+
+  Future<List<SalesReportRow>> getSalesReport({
+    required String from,
+    required String to,
+    required String groupBy,
+  }) async {
+    final resp = await _dio.get(Endpoints.salesReport,
+        queryParameters: {'from': from, 'to': to, 'group_by': groupBy});
+    return ((resp.data['rows'] as List?) ?? const [])
+        .map((j) => SalesReportRow.fromJson(j as Map<String, dynamic>))
+        .toList();
+  }
+
+  // ─── Master Data ───────────────────────────────────────────────────────────
+
+  Future<List<Principal>> listPrincipals() async {
+    final resp = await _dio.get(Endpoints.principals);
+    return ((resp.data['principals'] as List?) ?? const [])
+        .map((j) => Principal.fromJson(j as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<Principal> createPrincipal(String name, {String? code}) async {
+    final resp = await _dio.post(Endpoints.principals, data: {
+      'name': name,
+      if (code != null && code.isNotEmpty) 'code': code,
+    });
+    return Principal.fromJson(resp.data as Map<String, dynamic>);
+  }
+
+  Future<void> deletePrincipal(String id) async {
+    await _dio.delete(Endpoints.principal(id));
+  }
+
+  Future<List<SeriesEntry>> listSeriesRegistry() async {
+    final resp = await _dio.get(Endpoints.seriesRegistry);
+    return ((resp.data['series'] as List?) ?? const [])
+        .map((j) => SeriesEntry.fromJson(j as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<void> upsertSeriesEntry({
+    required String seriesPrefix,
+    String? entityId,
+    String? principalId,
+  }) async {
+    await _dio.post(Endpoints.seriesRegistry, data: {
+      'series_prefix': seriesPrefix,
+      if (entityId != null) 'entity_id': entityId,
+      if (principalId != null) 'principal_id': principalId,
+    });
+  }
+
+  Future<void> deleteSeriesEntry(String id) async {
+    await _dio.delete(Endpoints.seriesEntry(id));
+  }
+
+  Future<List<BuyerBranch>> listBuyerBranches({String? buyerId}) async {
+    final resp = await _dio.get(buyerId == null
+        ? Endpoints.allBuyerBranches
+        : Endpoints.buyerBranches(buyerId));
+    return ((resp.data['branches'] as List?) ?? const [])
+        .map((j) => BuyerBranch.fromJson(j as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<void> createBuyerBranch({
+    required String buyerId,
+    required String name,
+    String? code,
+    String? gateEntryPrefix,
+  }) async {
+    await _dio.post(Endpoints.buyerBranches(buyerId), data: {
+      'name': name,
+      if (code != null && code.isNotEmpty) 'code': code,
+      if (gateEntryPrefix != null && gateEntryPrefix.isNotEmpty)
+        'gate_entry_prefix': gateEntryPrefix,
+    });
+  }
+
+  Future<void> deleteBuyerBranch(String branchId) async {
+    await _dio.delete(Endpoints.buyerBranch(branchId));
+  }
+
+  Future<void> updateBuyer(
+    String buyerId, {
+    String? salesChannel,
+    int? defaultPaymentTermsDays,
+  }) async {
+    await _dio.patch(Endpoints.buyer(buyerId), data: {
+      if (salesChannel != null) 'sales_channel': salesChannel,
+      if (defaultPaymentTermsDays != null)
+        'default_payment_terms_days': defaultPaymentTermsDays,
+    });
+  }
 }
 
 final ownerService = OwnerService();
@@ -445,4 +583,41 @@ final ownerInvoicesProvider = FutureProvider<List<OwnerInvoice>>((ref) async {
 final ownerInvoiceDetailProvider =
     FutureProvider.family<InvoiceDetail, String>((ref, invoiceId) async {
   return ownerService.getInvoiceDetail(invoiceId);
+});
+
+final receivablesProvider = FutureProvider<ReceivablesSummary>((ref) async {
+  return ownerService.getReceivables();
+});
+
+final buyerReceivablesProvider =
+    FutureProvider.family<List<ReceivableInvoice>, String>(
+        (ref, buyerId) async {
+  return ownerService.getBuyerReceivables(buyerId);
+});
+
+final invoicePaymentsProvider =
+    FutureProvider.family<List<PaymentRecord>, String>((ref, invoiceId) async {
+  return ownerService.listPayments(invoiceId);
+});
+
+/// (from, to, groupBy) — all ISO dates. A record keeps family keys value-equal.
+typedef SalesReportQuery = ({String from, String to, String groupBy});
+
+final salesReportProvider =
+    FutureProvider.family<List<SalesReportRow>, SalesReportQuery>(
+        (ref, q) async {
+  return ownerService.getSalesReport(from: q.from, to: q.to, groupBy: q.groupBy);
+});
+
+final principalsProvider = FutureProvider<List<Principal>>((ref) async {
+  return ownerService.listPrincipals();
+});
+
+final seriesRegistryProvider = FutureProvider<List<SeriesEntry>>((ref) async {
+  return ownerService.listSeriesRegistry();
+});
+
+final buyerBranchesProvider =
+    FutureProvider.family<List<BuyerBranch>, String>((ref, buyerId) async {
+  return ownerService.listBuyerBranches(buyerId: buyerId);
 });

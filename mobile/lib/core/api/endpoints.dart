@@ -52,4 +52,26 @@ class Endpoints {
 
   static String get rules => '$_base/api/v1/rules';
   static String rule(String id) => '$_base/api/v1/rules/$id';
+
+  // Receivables + payments
+  static String get receivables => '$_base/api/v1/owner/receivables';
+  static String buyerReceivables(String buyerId) =>
+      '$_base/api/v1/owner/receivables/$buyerId';
+  static String invoicePayments(String invoiceId) =>
+      '$_base/api/v1/invoices/$invoiceId/payments';
+
+  // Sales reports
+  static String get salesReport => '$_base/api/v1/owner/reports/sales';
+
+  // Master data
+  static String get principals => '$_base/api/v1/principals';
+  static String principal(String id) => '$_base/api/v1/principals/$id';
+  static String get seriesRegistry => '$_base/api/v1/series-registry';
+  static String seriesEntry(String id) => '$_base/api/v1/series-registry/$id';
+  static String get allBuyerBranches => '$_base/api/v1/buyers/branches';
+  static String buyerBranches(String buyerId) =>
+      '$_base/api/v1/buyers/$buyerId/branches';
+  static String buyerBranch(String branchId) =>
+      '$_base/api/v1/buyers/branches/$branchId';
+  static String buyer(String id) => '$_base/api/v1/buyers/$id';
 }

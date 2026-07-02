@@ -77,6 +77,23 @@ class QueuedBundle extends HiveObject {
   @HiveField(12)
   String? remoteInvoiceId; // set once the primary ledger upload has succeeded server-side
 
+  // Distributor-domain fields (nullable with defaults so bundles queued by
+  // older app versions keep loading — see AGENTS.md Hive convention).
+  @HiveField(13, defaultValue: null)
+  String? paymentType; // "CASH" | "CREDIT"
+
+  @HiveField(14, defaultValue: null)
+  int? paymentTermsDays;
+
+  @HiveField(15, defaultValue: null)
+  String? buyerBranchId;
+
+  @HiveField(16, defaultValue: null)
+  String? salesman;
+
+  @HiveField(17, defaultValue: null)
+  String? beat;
+
   QueuedBundle({
     required this.localId,
     required this.invoiceNumber,
@@ -91,5 +108,10 @@ class QueuedBundle extends HiveObject {
     this.syncError,
     required this.createdAtMs,
     this.remoteInvoiceId,
+    this.paymentType,
+    this.paymentTermsDays,
+    this.buyerBranchId,
+    this.salesman,
+    this.beat,
   });
 }
