@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
@@ -29,3 +30,23 @@ Future<void> saveToken(String token) =>
 Future<void> clearToken() => _secureStorage.delete(key: _tokenKey);
 
 Future<String?> readToken() => _secureStorage.read(key: _tokenKey);
+
+/// Decodes a JWT's payload without verifying the signature -- fine for
+/// reading our own previously-issued token to restore UI state (role, email)
+/// at startup; every actual API call is still verified server-side regardless.
+/// Returns null if the token is missing, malformed, or expired.
+Map<String, dynamic>? decodeJwtPayload(String token) {
+  try {
+    final parts = token.split('.');
+    if (parts.length != 3) return null;
+    final normalized = base64Url.normalize(parts[1]);
+    final payload = json.decode(utf8.decode(base64Url.decode(normalized))) as Map<String, dynamic>;
+    final exp = payload['exp'] as int?;
+    if (exp != null && DateTime.now().millisecondsSinceEpoch >= exp * 1000) {
+      return null;
+    }
+    return payload;
+  } catch (_) {
+    return null;
+  }
+}

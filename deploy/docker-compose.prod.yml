@@ -49,6 +49,9 @@ services:
       context: ../backend/python_worker
     environment:
       - TEMPORAL_HOST=temporal:7233
+      # No AWS access keys here on purpose -- boto3 picks up credentials from
+      # the EC2 instance's IAM role automatically via the metadata service.
+      - AWS_REGION=ap-south-1
     depends_on:
       - temporal
     restart: unless-stopped
@@ -106,6 +109,7 @@ services:
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddyfile/Caddyfile:ro
+      - ./downloads:/srv/downloads:ro
       - caddy_data:/data
       - caddy_config:/config
     command: caddy run --config /etc/caddyfile/Caddyfile --adapter caddyfile

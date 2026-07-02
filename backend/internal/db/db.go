@@ -328,6 +328,19 @@ func (r *Repository) GetEntityByGSTIN(ctx context.Context, tenantID, gstin strin
 	return &e, nil
 }
 
+func (r *Repository) GetEntityByID(ctx context.Context, tenantID, entityID string) (*Entity, error) {
+	var e Entity
+	err := r.WithTx(ctx, tenantID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			"SELECT id, organization_id, legal_name, tax_identifier, address, created_at FROM entities WHERE id = $1",
+			entityID).Scan(&e.ID, &e.OrganizationID, &e.LegalName, &e.TaxIdentifier, &e.Address, &e.CreatedAt)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &e, nil
+}
+
 // GetFirstEntity returns the tenant's earliest-created entity. Used by lightweight
 // ingestion flows (e.g. the worker upload simulator) that don't yet collect a real
 // entity selection from the caller.
@@ -737,6 +750,36 @@ func (r *Repository) GetDocumentsForInvoice(ctx context.Context, tenantID, invoi
 	return list, err
 }
 
+func (r *Repository) GetDocument(ctx context.Context, tenantID, documentID string) (*Document, error) {
+	var d Document
+	err := r.WithTx(ctx, tenantID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			"SELECT id, organization_id, invoice_id, document_type, is_primary, created_at FROM documents WHERE id = $1",
+			documentID).Scan(&d.ID, &d.OrganizationID, &d.InvoiceID, &d.DocumentType, &d.IsPrimary, &d.CreatedAt)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &d, nil
+}
+
+func (r *Repository) GetDocumentByInvoiceAndType(ctx context.Context, tenantID, invoiceID, documentType string) (*Document, error) {
+	var d Document
+	err := r.WithTx(ctx, tenantID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			`SELECT id, organization_id, invoice_id, document_type, is_primary, created_at
+			 FROM documents
+			 WHERE invoice_id = $1 AND document_type = $2
+			 ORDER BY created_at ASC
+			 LIMIT 1`,
+			invoiceID, documentType).Scan(&d.ID, &d.OrganizationID, &d.InvoiceID, &d.DocumentType, &d.IsPrimary, &d.CreatedAt)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &d, nil
+}
+
 // GetLatestDocumentVersion returns the most recent version row for a specific
 // document (not invoice) -- used to serve back the stored file's content.
 func (r *Repository) GetLatestDocumentVersion(ctx context.Context, tenantID, documentID string) (*DocumentVersion, error) {
@@ -753,6 +796,43 @@ func (r *Repository) GetLatestDocumentVersion(ctx context.Context, tenantID, doc
 	return &ver, nil
 }
 
+func (r *Repository) GetDocumentVersion(ctx context.Context, tenantID, documentID string, versionNumber int) (*DocumentVersion, error) {
+	var ver DocumentVersion
+	err := r.WithTx(ctx, tenantID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			`SELECT id, organization_id, document_id, version_number, s3_key, sha256_hash, metadata, created_by, created_at
+			 FROM document_versions WHERE document_id = $1 AND version_number = $2`,
+			documentID, versionNumber).Scan(&ver.ID, &ver.OrganizationID, &ver.DocumentID, &ver.VersionNumber, &ver.S3Key, &ver.SHA256Hash, &ver.Metadata, &ver.CreatedBy, &ver.CreatedAt)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &ver, nil
+}
+
+func (r *Repository) ListDocumentVersions(ctx context.Context, tenantID, documentID string) ([]*DocumentVersion, error) {
+	var list []*DocumentVersion
+	err := r.WithTx(ctx, tenantID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx,
+			`SELECT id, organization_id, document_id, version_number, s3_key, sha256_hash, metadata, created_by, created_at
+			 FROM document_versions WHERE document_id = $1 ORDER BY version_number ASC`,
+			documentID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var ver DocumentVersion
+			if err := rows.Scan(&ver.ID, &ver.OrganizationID, &ver.DocumentID, &ver.VersionNumber, &ver.S3Key, &ver.SHA256Hash, &ver.Metadata, &ver.CreatedBy, &ver.CreatedAt); err != nil {
+				return err
+			}
+			list = append(list, &ver)
+		}
+		return rows.Err()
+	})
+	return list, err
+}
+
 func (r *Repository) CreateDocumentVersion(ctx context.Context, tenantID string, ver *DocumentVersion) error {
 	return r.WithTx(ctx, tenantID, func(tx pgx.Tx) error {
 		ver.ID = uuid.New().String()
@@ -760,6 +840,24 @@ func (r *Repository) CreateDocumentVersion(ctx context.Context, tenantID string,
 		err := tx.QueryRow(ctx,
 			"INSERT INTO document_versions (id, organization_id, document_id, version_number, s3_key, sha256_hash, metadata, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING created_at",
 			ver.ID, ver.OrganizationID, ver.DocumentID, ver.VersionNumber, ver.S3Key, ver.SHA256Hash, ver.Metadata, ver.CreatedBy).Scan(&ver.CreatedAt)
+		return err
+	})
+}
+
+func (r *Repository) AppendDocumentVersion(ctx context.Context, tenantID string, ver *DocumentVersion) error {
+	return r.WithTx(ctx, tenantID, func(tx pgx.Tx) error {
+		ver.ID = uuid.New().String()
+		ver.OrganizationID = tenantID
+		err := tx.QueryRow(ctx,
+			`INSERT INTO document_versions
+			   (id, organization_id, document_id, version_number, s3_key, sha256_hash, metadata, created_by)
+			 VALUES (
+			   $1, $2, $3,
+			   (SELECT COALESCE(MAX(version_number), 0) + 1 FROM document_versions WHERE document_id = $3),
+			   $4, $5, $6, $7
+			 )
+			 RETURNING version_number, created_at`,
+			ver.ID, ver.OrganizationID, ver.DocumentID, ver.S3Key, ver.SHA256Hash, ver.Metadata, ver.CreatedBy).Scan(&ver.VersionNumber, &ver.CreatedAt)
 		return err
 	})
 }
@@ -1090,20 +1188,20 @@ func (r *Repository) UpsertBuyerDocRequirement(ctx context.Context, tenantID str
 // ─── Gate Entry Metadata ─────────────────────────────────────────────────────
 
 type GateEntryMetadata struct {
-	ID                 string    `json:"id"`
-	OrganizationID     string    `json:"organization_id"`
-	DocumentID         string    `json:"document_id"`
-	InvoiceID          string    `json:"invoice_id"`
-	GateEntryNumber    *string   `json:"gate_entry_number"`
-	GateEntryDate      *string   `json:"gate_entry_date"` // ISO date string
-	AcceptedQty        *float64  `json:"accepted_qty"`
-	InvoiceQty         *float64  `json:"invoice_qty"`
-	DiscrepancyAmount  *float64  `json:"discrepancy_amount"`
-	IsShortReceipt     bool      `json:"is_short_receipt"`
-	Notes              *string   `json:"notes"`
-	EnteredBy          *string   `json:"entered_by"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	ID                string    `json:"id"`
+	OrganizationID    string    `json:"organization_id"`
+	DocumentID        string    `json:"document_id"`
+	InvoiceID         string    `json:"invoice_id"`
+	GateEntryNumber   *string   `json:"gate_entry_number"`
+	GateEntryDate     *string   `json:"gate_entry_date"` // ISO date string
+	AcceptedQty       *float64  `json:"accepted_qty"`
+	InvoiceQty        *float64  `json:"invoice_qty"`
+	DiscrepancyAmount *float64  `json:"discrepancy_amount"`
+	IsShortReceipt    bool      `json:"is_short_receipt"`
+	Notes             *string   `json:"notes"`
+	EnteredBy         *string   `json:"entered_by"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 func (r *Repository) UpsertGateEntryMetadata(ctx context.Context, tenantID string, m *GateEntryMetadata) error {
@@ -1161,19 +1259,19 @@ func (r *Repository) ListGateEntriesByInvoice(ctx context.Context, tenantID, inv
 // ─── Invoice Disputes ─────────────────────────────────────────────────────────
 
 type InvoiceDispute struct {
-	ID                    string    `json:"id"`
-	OrganizationID        string    `json:"organization_id"`
-	InvoiceID             string    `json:"invoice_id"`
-	DisputeType           string    `json:"dispute_type"`
-	Description           string    `json:"description"`
-	RaisedBy              *string   `json:"raised_by"`
-	Status                string    `json:"status"`
-	ResolutionNotes       *string   `json:"resolution_notes"`
-	ResolvedBy            *string   `json:"resolved_by"`
-	ResolvedAt            *time.Time `json:"resolved_at"`
-	CreditNoteDocumentID  *string   `json:"credit_note_document_id"`
-	CreatedAt             time.Time `json:"created_at"`
-	UpdatedAt             time.Time `json:"updated_at"`
+	ID                   string     `json:"id"`
+	OrganizationID       string     `json:"organization_id"`
+	InvoiceID            string     `json:"invoice_id"`
+	DisputeType          string     `json:"dispute_type"`
+	Description          string     `json:"description"`
+	RaisedBy             *string    `json:"raised_by"`
+	Status               string     `json:"status"`
+	ResolutionNotes      *string    `json:"resolution_notes"`
+	ResolvedBy           *string    `json:"resolved_by"`
+	ResolvedAt           *time.Time `json:"resolved_at"`
+	CreditNoteDocumentID *string    `json:"credit_note_document_id"`
+	CreatedAt            time.Time  `json:"created_at"`
+	UpdatedAt            time.Time  `json:"updated_at"`
 }
 
 func (r *Repository) CreateDispute(ctx context.Context, tenantID string, d *InvoiceDispute) error {
@@ -1267,14 +1365,56 @@ func (r *Repository) SetDisputeCreditNote(ctx context.Context, tenantID, dispute
 	})
 }
 
+// ─── Alerts ───────────────────────────────────────────────────────────────────
+// Surfaces open exceptions and open disputes as a single feed so an
+// admin/manager can see what needs attention without having to remember to
+// open the dashboard and check both lists separately.
+
+type AlertItem struct {
+	Type          string    `json:"type"` // "exception" | "dispute"
+	InvoiceID     string    `json:"invoice_id"`
+	InvoiceNumber string    `json:"invoice_number"`
+	Subtype       string    `json:"subtype"` // exception_type or dispute_type
+	Description   string    `json:"description"`
+	RaisedAt      time.Time `json:"raised_at"`
+}
+
+func (r *Repository) GetOpenAlerts(ctx context.Context, tenantID string) ([]*AlertItem, error) {
+	var out []*AlertItem
+	err := r.WithTx(ctx, tenantID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT 'exception', e.invoice_id, i.invoice_number, e.exception_type, e.details::text, e.raised_at
+			FROM invoice_exceptions e JOIN invoices i ON i.id = e.invoice_id
+			WHERE e.status = 'open'
+			UNION ALL
+			SELECT 'dispute', d.invoice_id, i.invoice_number, d.dispute_type, d.description, d.created_at
+			FROM invoice_disputes d JOIN invoices i ON i.id = d.invoice_id
+			WHERE d.status IN ('OPEN', 'OWNER_REVIEWING')
+			ORDER BY 6 DESC`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var a AlertItem
+			if err := rows.Scan(&a.Type, &a.InvoiceID, &a.InvoiceNumber, &a.Subtype, &a.Description, &a.RaisedAt); err != nil {
+				return err
+			}
+			out = append(out, &a)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
 // ─── Owner Dashboard ──────────────────────────────────────────────────────────
 
 type OwnerDashboard struct {
-	TotalInvoices   int     `json:"total_invoices"`
-	TodayAmount     float64 `json:"today_amount"`
-	OpenExceptions  int     `json:"open_exceptions"`
-	OpenDisputes    int     `json:"open_disputes"`
-	PendingReview   int     `json:"pending_review"`
+	TotalInvoices  int     `json:"total_invoices"`
+	TodayAmount    float64 `json:"today_amount"`
+	OpenExceptions int     `json:"open_exceptions"`
+	OpenDisputes   int     `json:"open_disputes"`
+	PendingReview  int     `json:"pending_review"`
 }
 
 func (r *Repository) GetOwnerDashboard(ctx context.Context, tenantID string) (*OwnerDashboard, error) {
@@ -1360,10 +1500,10 @@ type DocumentRow struct {
 }
 
 type InvoiceDetail struct {
-	Invoice    OwnerInvoiceRow    `json:"invoice"`
-	Documents  []DocumentRow      `json:"documents"`
-	Exceptions []*InvoiceException `json:"exceptions"`
-	Disputes   []*InvoiceDispute  `json:"disputes"`
+	Invoice    OwnerInvoiceRow      `json:"invoice"`
+	Documents  []DocumentRow        `json:"documents"`
+	Exceptions []*InvoiceException  `json:"exceptions"`
+	Disputes   []*InvoiceDispute    `json:"disputes"`
 	GateEntry  []*GateEntryMetadata `json:"gate_entries"`
 }
 
@@ -1458,4 +1598,3 @@ func (r *Repository) GetInvoiceDetail(ctx context.Context, tenantID, invoiceID s
 
 	return &detail, nil
 }
-

@@ -92,10 +92,10 @@ func TestBuyersAndEntities_CreateAndList(t *testing.T) {
 	}
 }
 
-func TestOwnerDashboard_ReturnsStatsForAdminAndManager(t *testing.T) {
+func TestOwnerDashboard_ReturnsStatsForAdminManagerFinanceAndReviewer(t *testing.T) {
 	ts := startTestServer(t)
 
-	for _, token := range []string{ts.AdminToken, ts.ManagerToken} {
+	for _, token := range []string{ts.AdminToken, ts.ManagerToken, ts.FinanceToken, ts.ReviewerToken} {
 		resp := ts.get(t, "/api/v1/owner/dashboard", token)
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
@@ -103,8 +103,8 @@ func TestOwnerDashboard_ReturnsStatsForAdminAndManager(t *testing.T) {
 		}
 	}
 
-	// WORKER and FINANCE are not permitted on this route.
-	for _, token := range []string{ts.WorkerToken, ts.FinanceToken} {
+	// WORKER is not permitted on this route.
+	for _, token := range []string{ts.WorkerToken} {
 		resp := ts.get(t, "/api/v1/owner/dashboard", token)
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusForbidden {
@@ -122,7 +122,7 @@ func TestInvoiceList_Pagination(t *testing.T) {
 	resp := ts.get(t, "/api/v1/invoices?limit=2&offset=0", ts.WorkerToken)
 	type invoiceListResp struct {
 		Invoices []map[string]interface{} `json:"invoices"`
-		Total    int                       `json:"total"`
+		Total    int                      `json:"total"`
 	}
 	page := decodeJSON[invoiceListResp](t, resp)
 	if len(page.Invoices) > 2 {
@@ -182,6 +182,66 @@ func TestExceptions_ListAndResolve(t *testing.T) {
 	resolveResp.Body.Close()
 	if resolveResp.StatusCode != http.StatusOK {
 		t.Fatalf("resolve exception: expected 200, got %d", resolveResp.StatusCode)
+	}
+}
+
+func TestReviewer_CanResolveExceptionsButCannotApproveOrConfigure(t *testing.T) {
+	ts := startTestServer(t)
+	invoiceID := createTestInvoice(t, ts)
+
+	dbURL := os.Getenv("TEST_DATABASE_URL")
+	if dbURL == "" {
+		dbURL = "postgres://app_user:app_user_dev_password@127.0.0.1:5432/invoice_saas"
+	}
+	pool, err := pgxpool.New(context.Background(), dbURL)
+	if err != nil {
+		t.Fatalf("connect to postgres: %v", err)
+	}
+	defer pool.Close()
+	repo := db.NewRepository(pool)
+
+	if err := repo.RaiseExceptionIfNotOpen(context.Background(), ts.OrgID, invoiceID,
+		"document_mismatch", []byte(`{"reason":"reviewer test"}`)); err != nil {
+		t.Fatalf("seed exception: %v", err)
+	}
+
+	listResp := ts.get(t, "/api/v1/exceptions", ts.ReviewerToken)
+	type exception struct {
+		ID        string `json:"id"`
+		InvoiceID string `json:"invoice_id"`
+	}
+	type exceptionsListResp struct {
+		InvoiceExceptions []exception `json:"invoice_exceptions"`
+	}
+	exceptions := decodeJSON[exceptionsListResp](t, listResp).InvoiceExceptions
+	var exceptionID string
+	for _, e := range exceptions {
+		if e.InvoiceID == invoiceID {
+			exceptionID = e.ID
+		}
+	}
+	if exceptionID == "" {
+		t.Fatal("seeded exception did not appear for reviewer")
+	}
+
+	resolveResp := ts.post(t, "/api/v1/exceptions/"+exceptionID+"/resolve", ts.ReviewerToken,
+		map[string]string{"status": "resolved"})
+	resolveResp.Body.Close()
+	if resolveResp.StatusCode != http.StatusOK {
+		t.Fatalf("reviewer resolve exception: expected 200, got %d", resolveResp.StatusCode)
+	}
+
+	approveResp := ts.post(t, "/api/v1/invoices/"+invoiceID+"/approve", ts.ReviewerToken,
+		map[string]interface{}{"approved": true, "comments": "reviewed"})
+	approveResp.Body.Close()
+	if approveResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("reviewer approve: expected 403, got %d", approveResp.StatusCode)
+	}
+
+	rulesResp := ts.get(t, "/api/v1/rules", ts.ReviewerToken)
+	rulesResp.Body.Close()
+	if rulesResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("reviewer rules: expected 403, got %d", rulesResp.StatusCode)
 	}
 }
 

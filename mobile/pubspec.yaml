@@ -30,6 +30,10 @@ dependencies:
   # Camera
   camera: ^0.10.5+9
 
+  # One-off photo capture for admin-side uploads (credit notes) outside the
+  # worker capture flow's bundle-based session state
+  image_picker: ^1.1.2
+
   # Image compression
   image: ^4.1.7
 

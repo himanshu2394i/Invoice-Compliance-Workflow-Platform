@@ -2,10 +2,15 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"sync/atomic"
 	"testing"
+
+	"github.com/himanshu2394i/invoice-saas/internal/db"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // testInvoiceCounter guarantees each createTestInvoice call gets a distinct
@@ -119,6 +124,96 @@ func TestGateEntry_CrossTenantInvoice_Returns404(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected 404 for a gate entry against another tenant's invoice, got %d", resp.StatusCode)
+	}
+}
+
+func TestGateEntry_DocumentFromDifferentInvoice_Returns400(t *testing.T) {
+	ts := startTestServer(t)
+	invoiceID := createTestInvoice(t, ts)
+	otherInvoiceID := createTestInvoice(t, ts)
+	otherDocumentID := mustPrimaryDocumentID(t, ts, otherInvoiceID)
+
+	resp := ts.post(t, "/api/v1/invoices/"+invoiceID+"/gate-entry", ts.WorkerToken, map[string]interface{}{
+		"document_id":      otherDocumentID,
+		"is_short_receipt": true,
+		"notes":            "should be rejected -- this document belongs to another invoice",
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a gate entry document from another invoice, got %d", resp.StatusCode)
+	}
+}
+
+func TestSupportingDocument_WorkerCanAddFirstRequiredDocButCannotReplace(t *testing.T) {
+	ts := startTestServer(t)
+	invoiceID := createTestInvoice(t, ts)
+
+	firstResp := ts.uploadMultipart(t, "/api/v1/invoices/"+invoiceID+"/documents", ts.WorkerToken,
+		map[string]string{"document_type": "GRN_SEAL", "label": "GRN Seal"},
+		"file", "grn-seal.jpg", minimalJPEG(t))
+	firstResp.Body.Close()
+	if firstResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("worker first supporting upload: expected 202, got %d", firstResp.StatusCode)
+	}
+
+	replaceResp := ts.uploadMultipart(t, "/api/v1/invoices/"+invoiceID+"/documents", ts.WorkerToken,
+		map[string]string{"document_type": "GRN_SEAL", "label": "GRN Seal corrected"},
+		"file", "grn-seal-corrected.jpg", minimalJPEG(t))
+	replaceResp.Body.Close()
+	if replaceResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("worker replacement supporting upload: expected 403, got %d", replaceResp.StatusCode)
+	}
+}
+
+func TestSupportingDocument_ManagerReplaceAppendsDocumentVersion(t *testing.T) {
+	ts := startTestServer(t)
+	invoiceID := createTestInvoice(t, ts)
+
+	firstResp := ts.uploadMultipart(t, "/api/v1/invoices/"+invoiceID+"/documents", ts.WorkerToken,
+		map[string]string{"document_type": "GRN_SEAL", "label": "GRN Seal"},
+		"file", "grn-seal.jpg", minimalJPEG(t))
+	type uploadResp struct {
+		DocumentID string `json:"document_id"`
+		Status     string `json:"status"`
+	}
+	first := decodeJSON[uploadResp](t, firstResp)
+	if first.DocumentID == "" {
+		t.Fatal("expected first upload to return document_id")
+	}
+
+	replaceResp := ts.uploadMultipart(t, "/api/v1/invoices/"+invoiceID+"/documents", ts.ManagerToken,
+		map[string]string{"document_type": "GRN_SEAL", "label": "GRN Seal corrected"},
+		"file", "grn-seal-corrected.jpg", minimalJPEG(t))
+	replacement := decodeJSON[uploadResp](t, replaceResp)
+	if replaceResp.StatusCode != http.StatusCreated {
+		t.Fatalf("manager replacement supporting upload: expected 201, got %d", replaceResp.StatusCode)
+	}
+	if replacement.DocumentID != first.DocumentID {
+		t.Fatalf("replacement should append to existing document %s, got %s", first.DocumentID, replacement.DocumentID)
+	}
+	if replacement.Status != "DOCUMENT_VERSION_APPENDED" {
+		t.Fatalf("expected DOCUMENT_VERSION_APPENDED, got %q", replacement.Status)
+	}
+
+	dbURL := os.Getenv("TEST_DATABASE_URL")
+	if dbURL == "" {
+		dbURL = "postgres://app_user:app_user_dev_password@127.0.0.1:5432/invoice_saas"
+	}
+	pool, err := pgxpool.New(context.Background(), dbURL)
+	if err != nil {
+		t.Fatalf("connect to postgres: %v", err)
+	}
+	defer pool.Close()
+	repo := db.NewRepository(pool)
+	versions, err := repo.ListDocumentVersions(context.Background(), ts.OrgID, first.DocumentID)
+	if err != nil {
+		t.Fatalf("list versions: %v", err)
+	}
+	if len(versions) != 2 {
+		t.Fatalf("expected 2 immutable versions, got %d", len(versions))
+	}
+	if versions[0].VersionNumber != 1 || versions[1].VersionNumber != 2 {
+		t.Fatalf("expected versions 1 and 2, got %+v", versions)
 	}
 }
 

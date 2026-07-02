@@ -14,13 +14,17 @@ class CameraTarget {
   final String documentType;
   final String label;
   final bool isPrimary;
-  final int pageNumber; // 1-based; > 1 means this is an additional page of an existing doc type
+  final int
+      pageNumber; // 1-based; > 1 means this is an additional page of an existing doc type
+  final int?
+      replaceIndex; // primary invoice only: retake an existing page instead of adding a new one
 
   const CameraTarget({
     required this.documentType,
     required this.label,
     required this.isPrimary,
     this.pageNumber = 1,
+    this.replaceIndex,
   });
 }
 
@@ -64,7 +68,8 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
   Future<void> _initCamera() async {
     final status = await Permission.camera.request();
     if (!status.isGranted) {
-      setState(() => _errorMessage = 'Camera permission denied. Enable it in Settings.');
+      setState(() =>
+          _errorMessage = 'Camera permission denied. Enable it in Settings.');
       return;
     }
     final cameras = await availableCameras();
@@ -97,8 +102,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
 
     try {
       final xFile = await _controller!.takePicture();
-      final compressedPath =
-          await ImageStore.saveCompressed(File(xFile.path));
+      final compressedPath = await ImageStore.saveCompressed(File(xFile.path));
       // Delete temp camera file
       await File(xFile.path).delete();
 
@@ -107,7 +111,14 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       final isPrimary = target?.isPrimary ?? true;
 
       if (isPrimary) {
-        ref.read(bundleProvider.notifier).setInvoicePhoto(compressedPath);
+        final replaceIndex = target?.replaceIndex;
+        if (replaceIndex != null) {
+          ref
+              .read(bundleProvider.notifier)
+              .replaceInvoicePage(replaceIndex, compressedPath);
+        } else {
+          ref.read(bundleProvider.notifier).addInvoicePage(compressedPath);
+        }
         if (mounted) context.go('/capture/review');
       } else {
         // Supporting document (page 1 or additional pages)
@@ -139,84 +150,111 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
     final target = extra is CameraTarget ? extra : null;
     final label = target?.label ?? 'Tax Invoice';
 
-    return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
-        backgroundColor: Colors.black,
-        foregroundColor: Colors.white,
-        title: Text(label),
-      ),
-      body: _errorMessage != null
-          ? Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.camera_alt, size: 64, color: Colors.white54),
-                    const SizedBox(height: 16),
-                    Text(
-                      _errorMessage!,
-                      style: const TextStyle(color: Colors.white70),
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 24),
-                    ElevatedButton(
-                      onPressed: _initCamera,
-                      child: const Text('Retry'),
-                    ),
-                  ],
-                ),
-              ),
-            )
-          : _controller == null || !_controller!.value.isInitialized
-              ? const Center(child: CircularProgressIndicator(color: Colors.white))
-              : Stack(
-                  children: [
-                    SizedBox.expand(
-                      child: FittedBox(
-                        fit: BoxFit.cover,
-                        child: SizedBox(
-                          width: _controller!.value.previewSize!.height,
-                          height: _controller!.value.previewSize!.width,
-                          child: CameraPreview(_controller!),
+    Future<bool> handleBack() async {
+      if (target != null && !target.isPrimary) {
+        context.go('/capture/checklist');
+      } else {
+        context.go('/home');
+      }
+      return true;
+    }
+
+    return BackButtonListener(
+      onBackButtonPressed: handleBack,
+      child: PopScope(
+        canPop: false,
+        onPopInvokedWithResult: (didPop, result) {
+          if (didPop) return;
+          if (target != null && !target.isPrimary) {
+            context.go('/capture/checklist');
+          } else {
+            context.go('/home');
+          }
+        },
+        child: Scaffold(
+          backgroundColor: Colors.black,
+          appBar: AppBar(
+            backgroundColor: Colors.black,
+            foregroundColor: Colors.white,
+            title: Text(label),
+          ),
+          body: _errorMessage != null
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.camera_alt,
+                            size: 64, color: Colors.white54),
+                        const SizedBox(height: 16),
+                        Text(
+                          _errorMessage!,
+                          style: const TextStyle(color: Colors.white70),
+                          textAlign: TextAlign.center,
                         ),
-                      ),
+                        const SizedBox(height: 24),
+                        ElevatedButton(
+                          onPressed: _initCamera,
+                          child: const Text('Retry'),
+                        ),
+                      ],
                     ),
-                    Positioned(
-                      bottom: 48,
-                      left: 0,
-                      right: 0,
-                      child: Center(
-                        child: GestureDetector(
-                          onTap: _capture,
-                          child: Container(
-                            width: 72,
-                            height: 72,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              border: Border.all(color: Colors.white, width: 4),
+                  ),
+                )
+              : _controller == null || !_controller!.value.isInitialized
+                  ? const Center(
+                      child: CircularProgressIndicator(color: Colors.white))
+                  : Stack(
+                      children: [
+                        SizedBox.expand(
+                          child: FittedBox(
+                            fit: BoxFit.cover,
+                            child: SizedBox(
+                              width: _controller!.value.previewSize!.height,
+                              height: _controller!.value.previewSize!.width,
+                              child: CameraPreview(_controller!),
                             ),
-                            child: _isCapturing
-                                ? const Padding(
-                                    padding: EdgeInsets.all(16),
-                                    child: CircularProgressIndicator(
-                                        color: Colors.white, strokeWidth: 2),
-                                  )
-                                : const Icon(Icons.camera_alt,
-                                    color: Colors.white, size: 32),
                           ),
                         ),
-                      ),
+                        Positioned(
+                          bottom: 48,
+                          left: 0,
+                          right: 0,
+                          child: Center(
+                            child: GestureDetector(
+                              onTap: _capture,
+                              child: Container(
+                                width: 72,
+                                height: 72,
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  border:
+                                      Border.all(color: Colors.white, width: 4),
+                                ),
+                                child: _isCapturing
+                                    ? const Padding(
+                                        padding: EdgeInsets.all(16),
+                                        child: CircularProgressIndicator(
+                                            color: Colors.white,
+                                            strokeWidth: 2),
+                                      )
+                                    : const Icon(Icons.camera_alt,
+                                        color: Colors.white, size: 32),
+                              ),
+                            ),
+                          ),
+                        ),
+                        // Corner crop guides
+                        Positioned.fill(
+                          child: IgnorePointer(
+                            child: CustomPaint(painter: _CropGuidePainter()),
+                          ),
+                        ),
+                      ],
                     ),
-                    // Corner crop guides
-                    Positioned.fill(
-                      child: IgnorePointer(
-                        child: CustomPaint(painter: _CropGuidePainter()),
-                      ),
-                    ),
-                  ],
-                ),
+        ),
+      ),
     );
   }
 }
@@ -233,13 +271,15 @@ class _CropGuidePainter extends CustomPainter {
       ..style = PaintingStyle.stroke;
 
     // Top-left
-    canvas.drawLine(Offset(margin, margin + lineLen), Offset(margin, margin), paint);
-    canvas.drawLine(Offset(margin, margin), Offset(margin + lineLen, margin), paint);
+    canvas.drawLine(
+        Offset(margin, margin + lineLen), Offset(margin, margin), paint);
+    canvas.drawLine(
+        Offset(margin, margin), Offset(margin + lineLen, margin), paint);
     // Top-right
-    canvas.drawLine(
-        Offset(size.width - margin, margin + lineLen), Offset(size.width - margin, margin), paint);
-    canvas.drawLine(
-        Offset(size.width - margin, margin), Offset(size.width - margin - lineLen, margin), paint);
+    canvas.drawLine(Offset(size.width - margin, margin + lineLen),
+        Offset(size.width - margin, margin), paint);
+    canvas.drawLine(Offset(size.width - margin, margin),
+        Offset(size.width - margin - lineLen, margin), paint);
     // Bottom-left
     canvas.drawLine(Offset(margin, size.height - margin - lineLen),
         Offset(margin, size.height - margin), paint);

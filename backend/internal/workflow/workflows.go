@@ -44,6 +44,18 @@ type InvoiceProcessResult struct {
 	Message    string
 }
 
+func InvoiceOCRPreviewWorkflow(ctx workflow.Context, s3URI string) (validation.InvoiceData, error) {
+	ocrCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: time.Second * 20,
+		TaskQueue:           "ocr-tasks",
+	})
+	var extractedData validation.InvoiceData
+	if err := workflow.ExecuteActivity(ocrCtx, "ExtractTextAndLayout", s3URI).Get(ocrCtx, &extractedData); err != nil {
+		return validation.InvoiceData{}, err
+	}
+	return extractedData, nil
+}
+
 // InvoiceWorkflowName is the registered name used to start this workflow from the API.
 const InvoiceWorkflowName = "InvoiceWorkflow"
 
@@ -84,10 +96,10 @@ func InvoiceWorkflow(ctx workflow.Context, input InvoiceProcessInput) (*InvoiceP
 	}
 	logAudit("DOCUMENT_EXTRACTED", "system", "OCR extraction completed", map[string]interface{}{"vendor_gstin": extractedData.VendorGSTIN})
 
-	// Step 2: Deterministic validation.
+	// Step 2: Deterministic validation + reconciliation against the submitted invoice row.
 	setState(StateValidating)
 	var validationResult validation.ValidationResult
-	if err := workflow.ExecuteActivity(ctx, ValidateInvoiceActivity, extractedData).Get(ctx, &validationResult); err != nil {
+	if err := workflow.ExecuteActivity(ctx, ValidateInvoiceAgainstRecordActivity, input.TenantID, input.InvoiceID, extractedData).Get(ctx, &validationResult); err != nil {
 		return nil, err
 	}
 
@@ -97,16 +109,27 @@ func InvoiceWorkflow(ctx workflow.Context, input InvoiceProcessInput) (*InvoiceP
 		logger.Warn("Deterministic validation failed", "Errors", validationResult.Errors)
 		setState(StateValidationFail)
 		logAudit("VALIDATION_FAILED", "system", "Deterministic validation failed", map[string]interface{}{"errors": validationResult.Errors})
+		if err := workflow.ExecuteActivity(ctx, RaiseValidationExceptionActivity, input.TenantID, input.InvoiceID, validationResult).Get(ctx, nil); err != nil {
+			logger.Warn("Failed to raise validation exception", "Error", err)
+		}
 
-		// V2 Feature: Delegate to AI Agent before escalating to a human.
-		var aiDecision map[string]interface{}
-		err := workflow.ExecuteActivity(ocrCtx, "AIResolveDiscrepancy", validationResult).Get(ocrCtx, &aiDecision)
+		aiResolved := false
+		if !requiresHumanValidationReview(validationResult) {
+			// V2 Feature: Delegate minor arithmetic-only discrepancies to an AI
+			// agent before escalating. OCR-inconclusive and submitted-data
+			// mismatches are evidence problems, so they require human review.
+			var aiDecision map[string]interface{}
+			err := workflow.ExecuteActivity(ocrCtx, "AIResolveDiscrepancy", validationResult).Get(ocrCtx, &aiDecision)
+			if err == nil && aiDecision["resolved"] == true {
+				aiResolved = true
+				logger.Info("AI Agent automatically resolved the discrepancy", "Reasoning", aiDecision["reasoning"])
+				logAudit("AI_AUTO_RESOLVED", "ai-agent", "AI agent resolved validation discrepancy", aiDecision)
+			}
+		}
 
-		if err == nil && aiDecision["resolved"] == true {
-			logger.Info("AI Agent automatically resolved the discrepancy", "Reasoning", aiDecision["reasoning"])
-			logAudit("AI_AUTO_RESOLVED", "ai-agent", "AI agent resolved validation discrepancy", aiDecision)
-		} else {
+		if !aiResolved {
 			logger.Info("AI Agent escalated to human reviewer")
+			setState(StatePendingManager)
 			// A manager override-approves to continue the pipeline despite the validation
 			// failure, or rejects outright. Reuses the manager channel rather than adding
 			// a third signal type just for this escalation path.
@@ -196,4 +219,8 @@ func waitForDecision(ctx workflow.Context, approveCh, rejectCh workflow.ReceiveC
 	}
 	selector.Select(ctx)
 	return approved, payload
+}
+
+func requiresHumanValidationReview(result validation.ValidationResult) bool {
+	return result.HasCode("ocr_inconclusive") || result.HasCode("invoice_data_mismatch")
 }

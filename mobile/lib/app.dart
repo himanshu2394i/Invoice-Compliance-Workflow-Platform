@@ -9,10 +9,14 @@ import 'features/capture/camera_screen.dart';
 import 'features/capture/review_screen.dart';
 import 'features/capture/checklist_screen.dart';
 import 'features/queue/queue_screen.dart';
+import 'features/capture/my_invoices_screen.dart';
 import 'features/owner/owner_dashboard_screen.dart';
 import 'features/owner/owner_invoices_screen.dart';
 import 'features/owner/invoice_detail_screen.dart';
+import 'features/owner/alerts_screen.dart';
 import 'features/settings/settings_screen.dart';
+import 'features/admin/buyer_requirements_screen.dart';
+import 'features/admin/rules_screen.dart';
 
 final _router = GoRouter(
   initialLocation: '/login',
@@ -23,6 +27,7 @@ final _router = GoRouter(
     GoRoute(path: '/capture/review', builder: (_, __) => const ReviewScreen()),
     GoRoute(path: '/capture/checklist', builder: (_, __) => const ChecklistScreen()),
     GoRoute(path: '/queue', builder: (_, __) => const QueueScreen()),
+    GoRoute(path: '/my-invoices', builder: (_, __) => const MyInvoicesScreen()),
     // Owner routes — dashboard + invoice detail
     GoRoute(path: '/settings', builder: (_, __) => const SettingsScreen()),
     GoRoute(path: '/owner', builder: (_, __) => const OwnerDashboardScreen()),
@@ -30,6 +35,15 @@ final _router = GoRouter(
     GoRoute(
       path: '/owner/invoices/:id',
       builder: (_, state) => InvoiceDetailScreen(invoiceId: state.pathParameters['id']!),
+    ),
+    GoRoute(path: '/alerts', builder: (_, __) => const AlertsScreen()),
+    GoRoute(
+      path: '/admin/buyer-requirements',
+      builder: (_, __) => const BuyerRequirementsScreen(),
+    ),
+    GoRoute(
+      path: '/admin/rules',
+      builder: (_, __) => const RulesScreen(),
     ),
   ],
   redirect: (context, state) {

@@ -26,3 +26,63 @@ func TestGSTINRegex(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateRejectsSimulatedExtraction(t *testing.T) {
+	result := Validate(InvoiceData{
+		Simulated:   true,
+		GrossAmount: 15000,
+		NetAmount:   13500,
+		TaxAmount:   1500,
+		VendorGSTIN: "06AAAAA0017A1ZH",
+	})
+
+	if result.IsValid {
+		t.Fatal("expected simulated OCR extraction to be invalid")
+	}
+	if !result.HasCode("ocr_inconclusive") {
+		t.Fatalf("expected ocr_inconclusive code, got %#v", result.Codes)
+	}
+}
+
+func TestValidateAgainstExpectedRejectsWorkerAmountMismatch(t *testing.T) {
+	result := ValidateAgainstExpected(InvoiceData{
+		InvoiceNumber: "A260000218",
+		VendorGSTIN:   "06AAAAA0003A1Z3",
+		GrossAmount:   15000,
+		NetAmount:     13500,
+		TaxAmount:     1500,
+	}, ExpectedInvoice{
+		InvoiceNumber: "A260000218",
+		SellerGSTIN:   "06AAAAA0003A1Z3",
+		GrossAmount:   10913,
+		TaxAmount:     519.55,
+	})
+
+	if result.IsValid {
+		t.Fatal("expected OCR-vs-submitted amount mismatch to be invalid")
+	}
+	if !result.HasCode("invoice_data_mismatch") {
+		t.Fatalf("expected invoice_data_mismatch code, got %#v", result.Codes)
+	}
+}
+
+func TestValidateAgainstExpectedAcceptsMatchingInvoice(t *testing.T) {
+	result := ValidateAgainstExpected(InvoiceData{
+		InvoiceNumber: "A260000218",
+		VendorGSTIN:   "06AAAAA0003A1Z3",
+		BuyerGSTIN:    "06AAAAA0013A1ZD",
+		GrossAmount:   10913,
+		NetAmount:     10393.45,
+		TaxAmount:     519.55,
+	}, ExpectedInvoice{
+		InvoiceNumber: "A260000218",
+		SellerGSTIN:   "06AAAAA0003A1Z3",
+		BuyerGSTIN:    "06AAAAA0013A1ZD",
+		GrossAmount:   10913,
+		TaxAmount:     519.55,
+	})
+
+	if !result.IsValid {
+		t.Fatalf("expected matching OCR/submitted invoice to be valid, got errors %#v", result.Errors)
+	}
+}

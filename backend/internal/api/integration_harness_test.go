@@ -54,14 +54,15 @@ func dialWithRetry[T any](t *testing.T, dial func() (T, error)) T {
 }
 
 type testServer struct {
-	t            *testing.T
-	URL          string
-	httpClient   *http.Client
-	OrgID        string
-	AdminToken   string
-	WorkerToken  string
-	ManagerToken string
-	FinanceToken string
+	t             *testing.T
+	URL           string
+	httpClient    *http.Client
+	OrgID         string
+	AdminToken    string
+	WorkerToken   string
+	ManagerToken  string
+	FinanceToken  string
+	ReviewerToken string
 }
 
 // startTestServer boots the real API server in-process against the live
@@ -124,6 +125,7 @@ func startTestServer(t *testing.T) *testServer {
 	ts.WorkerToken = ts.loginAs(t, emailByRole["WORKER"], demoPassword)
 	ts.ManagerToken = ts.loginAs(t, emailByRole["MANAGER"], demoPassword)
 	ts.FinanceToken = ts.loginAs(t, emailByRole["FINANCE"], demoPassword)
+	ts.ReviewerToken = ts.loginAs(t, emailByRole["REVIEWER"], demoPassword)
 
 	return ts
 }

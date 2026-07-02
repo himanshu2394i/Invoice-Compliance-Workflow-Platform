@@ -7,7 +7,7 @@ const _uuid = Uuid();
 
 class CaptureSession {
   final String sessionId;
-  final String? invoicePhotoPath; // local compressed path
+  final List<String> invoicePhotoPaths; // local compressed paths, page 1..N
   final String invoiceNumber;
   final String entityGstin;
   final String buyerGstin;
@@ -15,14 +15,15 @@ class CaptureSession {
   final String invoiceDate;
   final double taxableAmount;
   final double totalAmount;
-  final List<BuyerRequirement> requiredDocs; // populated after buyer GSTIN lookup
+  final List<BuyerRequirement>
+      requiredDocs; // populated after buyer GSTIN lookup
   final List<QueuedPhoto> additionalPhotos; // supporting docs captured so far
   final bool isSaving;
   final String? error;
 
   const CaptureSession({
     required this.sessionId,
-    this.invoicePhotoPath,
+    this.invoicePhotoPaths = const [],
     this.invoiceNumber = '',
     this.entityGstin = '',
     this.buyerGstin = '',
@@ -37,7 +38,7 @@ class CaptureSession {
   });
 
   CaptureSession copyWith({
-    String? invoicePhotoPath,
+    List<String>? invoicePhotoPaths,
     String? invoiceNumber,
     String? entityGstin,
     String? buyerGstin,
@@ -52,7 +53,7 @@ class CaptureSession {
   }) =>
       CaptureSession(
         sessionId: sessionId,
-        invoicePhotoPath: invoicePhotoPath ?? this.invoicePhotoPath,
+        invoicePhotoPaths: invoicePhotoPaths ?? this.invoicePhotoPaths,
         invoiceNumber: invoiceNumber ?? this.invoiceNumber,
         entityGstin: entityGstin ?? this.entityGstin,
         buyerGstin: buyerGstin ?? this.buyerGstin,
@@ -68,21 +69,26 @@ class CaptureSession {
 
   /// Returns the document types that have not yet had a photo captured.
   List<BuyerRequirement> get pendingDocs => requiredDocs
-      .where((r) =>
-          !additionalPhotos.any((p) => p.documentType == r.documentType))
+      .where(
+          (r) => !additionalPhotos.any((p) => p.documentType == r.documentType))
       .toList();
 
   bool get allDocsComplete => pendingDocs.isEmpty;
 
   QueuedBundle toBundle() {
+    final invoicePhotos = [
+      for (var i = 0; i < invoicePhotoPaths.length; i++)
+        QueuedPhoto(
+          localId: _uuid.v4(),
+          localPath: invoicePhotoPaths[i],
+          documentType: i == 0 ? 'INVOICE' : 'INVOICE_PAGE',
+          label: 'Tax Invoice',
+          isPrimary: i == 0,
+          pageNumber: i + 1,
+        ),
+    ];
     final photos = [
-      QueuedPhoto(
-        localId: _uuid.v4(),
-        localPath: invoicePhotoPath!,
-        documentType: 'INVOICE',
-        label: 'Tax Invoice',
-        isPrimary: true,
-      ),
+      ...invoicePhotos,
       ...additionalPhotos,
     ];
     return QueuedBundle(
@@ -106,8 +112,19 @@ class BundleNotifier extends StateNotifier<CaptureSession> {
 
   void reset() => state = CaptureSession(sessionId: _uuid.v4());
 
-  void setInvoicePhoto(String path) =>
-      state = state.copyWith(invoicePhotoPath: path);
+  void addInvoicePage(String path) => state =
+      state.copyWith(invoicePhotoPaths: [...state.invoicePhotoPaths, path]);
+
+  void replaceInvoicePage(int index, String path) {
+    final updated = [...state.invoicePhotoPaths];
+    updated[index] = path;
+    state = state.copyWith(invoicePhotoPaths: updated);
+  }
+
+  void removeInvoicePage(int index) {
+    final updated = [...state.invoicePhotoPaths]..removeAt(index);
+    state = state.copyWith(invoicePhotoPaths: updated);
+  }
 
   void updateInvoiceFields({
     String? invoiceNumber,
@@ -142,5 +159,5 @@ class BundleNotifier extends StateNotifier<CaptureSession> {
   void setError(String? error) => state = state.copyWith(error: error);
 }
 
-final bundleProvider =
-    StateNotifierProvider<BundleNotifier, CaptureSession>((_) => BundleNotifier());
+final bundleProvider = StateNotifierProvider<BundleNotifier, CaptureSession>(
+    (_) => BundleNotifier());

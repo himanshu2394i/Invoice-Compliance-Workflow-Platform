@@ -24,6 +24,22 @@ func (s *Server) handleOwnerDashboard(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, dash)
 }
 
+// handleGetAlerts powers the mobile app's alert badge/list -- everything
+// currently open across exceptions and disputes, so an admin/manager doesn't
+// have to remember to open the dashboard to find out something needs them.
+func (s *Server) handleGetAlerts(w http.ResponseWriter, r *http.Request) {
+	tenantID := claimsFromContext(r.Context()).OrganizationID
+	alerts, err := s.Repo.GetOpenAlerts(r.Context(), tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to load alerts: "+err.Error())
+		return
+	}
+	if alerts == nil {
+		alerts = []*db.AlertItem{}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"alerts": alerts, "count": len(alerts)})
+}
+
 // ─── Owner Invoice List ───────────────────────────────────────────────────────
 
 func (s *Server) handleOwnerListInvoices(w http.ResponseWriter, r *http.Request) {
@@ -76,7 +92,7 @@ func (s *Server) handleOwnerDocumentContent(w http.ResponseWriter, r *http.Reque
 	tenantID := claimsFromContext(r.Context()).OrganizationID
 	docID := r.PathValue("doc_id")
 
-	ver, err := s.Repo.GetLatestDocumentVersion(r.Context(), tenantID, docID)
+	ver, err := s.documentVersionFromRequest(r, tenantID, docID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "Document not found")
 		return
@@ -320,6 +336,15 @@ func (s *Server) handleSetGateEntry(w http.ResponseWriter, r *http.Request) {
 	// entry metadata (and potentially auto-raising a dispute) against it.
 	if _, err := s.Repo.GetInvoice(r.Context(), tenantID, invoiceID); err != nil {
 		writeError(w, http.StatusNotFound, "Invoice not found")
+		return
+	}
+	doc, err := s.Repo.GetDocument(r.Context(), tenantID, req.DocumentID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "Document not found")
+		return
+	}
+	if doc.InvoiceID != invoiceID {
+		writeError(w, http.StatusBadRequest, "document_id does not belong to this invoice")
 		return
 	}
 

@@ -18,6 +18,7 @@ import (
 	"github.com/himanshu2394i/invoice-saas/internal/auth"
 	"github.com/himanshu2394i/invoice-saas/internal/db"
 	"github.com/himanshu2394i/invoice-saas/internal/storage"
+	"github.com/himanshu2394i/invoice-saas/internal/validation"
 	workflowpkg "github.com/himanshu2394i/invoice-saas/internal/workflow"
 	"go.temporal.io/sdk/client"
 )
@@ -53,13 +54,14 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/entities", requireAuth(s.handleListEntities))
 	mux.HandleFunc("GET /api/v1/invoices", requireAuth(s.handleListInvoices))
 	mux.HandleFunc("GET /api/v1/invoices/{id}", requireAuth(s.handleGetInvoice))
-	mux.HandleFunc("POST /api/v1/invoices/{id}/documents", requireAuth(requireRole("WORKER", "ADMIN")(s.handleUploadSupportingDocument)))
+	mux.HandleFunc("POST /api/v1/invoices/{id}/documents", requireAuth(requireRole("WORKER", "ADMIN", "MANAGER")(s.handleUploadSupportingDocument)))
 	mux.HandleFunc("GET /api/v1/documents/{id}/content", requireAuth(s.handleGetDocumentContent))
+	mux.HandleFunc("GET /api/v1/documents/{id}/versions", requireAuth(requireRole("ADMIN", "MANAGER")(s.handleListDocumentVersions)))
 	mux.HandleFunc("POST /api/v1/buyers", requireAuth(requireRole("WORKER", "ADMIN")(s.handleCreateBuyer)))
 	mux.HandleFunc("GET /api/v1/buyers", requireAuth(s.handleListBuyers))
 	mux.HandleFunc("GET /api/v1/exceptions", requireAuth(s.handleListExceptions))
-	mux.HandleFunc("POST /api/v1/exceptions/{id}/resolve", requireAuth(requireRole("WORKER", "ADMIN", "MANAGER")(s.handleResolveException)))
-	mux.HandleFunc("POST /api/v1/missing-invoice-numbers/{id}/resolve", requireAuth(requireRole("WORKER", "ADMIN", "MANAGER")(s.handleResolveMissingInvoiceNumber)))
+	mux.HandleFunc("POST /api/v1/exceptions/{id}/resolve", requireAuth(requireRole("WORKER", "ADMIN", "MANAGER", "REVIEWER")(s.handleResolveException)))
+	mux.HandleFunc("POST /api/v1/missing-invoice-numbers/{id}/resolve", requireAuth(requireRole("WORKER", "ADMIN", "MANAGER", "REVIEWER")(s.handleResolveMissingInvoiceNumber)))
 	mux.HandleFunc("POST /api/v1/invoices/{id}/approve", requireAuth(requireRole("MANAGER", "FINANCE", "ADMIN")(s.handleApproveInvoice)))
 	mux.HandleFunc("GET /api/v1/invoices/{id}/audit-trail", requireAuth(s.handleGetAuditTrail))
 	mux.HandleFunc("POST /api/v1/rules", requireAuth(requireRole("ADMIN")(s.handleCreateRule)))
@@ -67,21 +69,23 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/v1/rules/{id}", requireAuth(requireRole("ADMIN")(s.handleDeleteRule)))
 
 	// Mobile-specific endpoints — document requirement lookup and configuration
+	mux.HandleFunc("POST /api/v1/mobile/invoice-ocr-preview", requireAuth(requireRole("WORKER", "ADMIN")(s.handleInvoiceOCRPreview)))
 	mux.HandleFunc("GET /api/v1/mobile/buyers/requirements", requireAuth(s.handleMobileGetBuyerRequirements))
 	mux.HandleFunc("GET /api/v1/mobile/buyers/{buyer_id}/requirements", requireAuth(s.handleMobileGetBuyerRequirements))
 	mux.HandleFunc("POST /api/v1/mobile/buyers/{buyer_id}/requirements", requireAuth(requireRole("WORKER", "ADMIN")(s.handleMobileUpsertBuyerRequirement)))
 
 	// Owner dashboard — invoice history, exceptions, dispute management
-	mux.HandleFunc("GET /api/v1/owner/dashboard", requireAuth(requireRole("ADMIN", "MANAGER")(s.handleOwnerDashboard)))
-	mux.HandleFunc("GET /api/v1/owner/invoices", requireAuth(requireRole("ADMIN", "MANAGER")(s.handleOwnerListInvoices)))
-	mux.HandleFunc("GET /api/v1/owner/invoices/{id}", requireAuth(requireRole("ADMIN", "MANAGER")(s.handleOwnerGetInvoice)))
-	mux.HandleFunc("GET /api/v1/owner/invoices/{id}/documents/{doc_id}/content", requireAuth(requireRole("ADMIN", "MANAGER")(s.handleOwnerDocumentContent)))
+	mux.HandleFunc("GET /api/v1/owner/dashboard", requireAuth(requireRole("ADMIN", "MANAGER", "FINANCE", "REVIEWER")(s.handleOwnerDashboard)))
+	mux.HandleFunc("GET /api/v1/owner/alerts", requireAuth(requireRole("ADMIN", "MANAGER", "FINANCE", "REVIEWER")(s.handleGetAlerts)))
+	mux.HandleFunc("GET /api/v1/owner/invoices", requireAuth(requireRole("ADMIN", "MANAGER", "FINANCE", "REVIEWER")(s.handleOwnerListInvoices)))
+	mux.HandleFunc("GET /api/v1/owner/invoices/{id}", requireAuth(requireRole("ADMIN", "MANAGER", "FINANCE", "REVIEWER")(s.handleOwnerGetInvoice)))
+	mux.HandleFunc("GET /api/v1/owner/invoices/{id}/documents/{doc_id}/content", requireAuth(requireRole("ADMIN", "MANAGER", "FINANCE", "REVIEWER")(s.handleOwnerDocumentContent)))
 
 	// Disputes — any authenticated user can raise; admin/manager can resolve
 	mux.HandleFunc("POST /api/v1/disputes", requireAuth(s.handleCreateDispute))
-	mux.HandleFunc("GET /api/v1/disputes", requireAuth(requireRole("ADMIN", "MANAGER")(s.handleListDisputes)))
-	mux.HandleFunc("PATCH /api/v1/disputes/{id}", requireAuth(requireRole("ADMIN", "MANAGER")(s.handleUpdateDispute)))
-	mux.HandleFunc("POST /api/v1/disputes/{id}/credit-note", requireAuth(requireRole("ADMIN", "MANAGER")(s.handleUploadCreditNote)))
+	mux.HandleFunc("GET /api/v1/disputes", requireAuth(requireRole("ADMIN", "MANAGER", "REVIEWER")(s.handleListDisputes)))
+	mux.HandleFunc("PATCH /api/v1/disputes/{id}", requireAuth(requireRole("ADMIN", "MANAGER", "REVIEWER")(s.handleUpdateDispute)))
+	mux.HandleFunc("POST /api/v1/disputes/{id}/credit-note", requireAuth(requireRole("ADMIN", "MANAGER", "REVIEWER")(s.handleUploadCreditNote)))
 
 	// Gate entry metadata — set by workers/reviewers after photographing gate note
 	mux.HandleFunc("POST /api/v1/invoices/{id}/gate-entry", requireAuth(s.handleSetGateEntry))
@@ -114,6 +118,88 @@ func (s *Server) startInvoiceWorkflow(ctx context.Context, tenantID, invoiceID, 
 		S3URI:     s3Key,
 	}
 	return s.TemporalClient.ExecuteWorkflow(ctx, options, workflowpkg.InvoiceWorkflow, input)
+}
+
+func (s *Server) startInvoiceOCRPreviewWorkflow(ctx context.Context, tenantID, s3Key string) (client.WorkflowRun, error) {
+	workflowID := fmt.Sprintf("tenant-%s-ocr-preview-%d", tenantID, time.Now().UnixNano())
+	options := client.StartWorkflowOptions{
+		ID:        workflowID,
+		TaskQueue: invoiceTaskQueue,
+	}
+	return s.TemporalClient.ExecuteWorkflow(ctx, options, workflowpkg.InvoiceOCRPreviewWorkflow, s3Key)
+}
+
+type InvoiceOCRPreviewResponse struct {
+	OCRAvailable  bool    `json:"ocr_available"`
+	TimedOut      bool    `json:"timed_out"`
+	Error         string  `json:"error,omitempty"`
+	InvoiceNumber string  `json:"invoice_number,omitempty"`
+	SellerGSTIN   string  `json:"seller_gstin,omitempty"`
+	BuyerGSTIN    string  `json:"buyer_gstin,omitempty"`
+	GrossAmount   float64 `json:"gross_amount,omitempty"`
+	TaxableAmount float64 `json:"taxable_amount,omitempty"`
+	TaxAmount     float64 `json:"tax_amount,omitempty"`
+	Simulated     bool    `json:"simulated,omitempty"`
+	Inconclusive  bool    `json:"inconclusive,omitempty"`
+}
+
+func previewResponseFromInvoiceData(data validation.InvoiceData) InvoiceOCRPreviewResponse {
+	return InvoiceOCRPreviewResponse{
+		OCRAvailable:  !data.Simulated && !data.Inconclusive,
+		InvoiceNumber: strings.TrimSpace(data.InvoiceNumber),
+		SellerGSTIN:   strings.TrimSpace(data.VendorGSTIN),
+		BuyerGSTIN:    strings.TrimSpace(data.BuyerGSTIN),
+		GrossAmount:   data.GrossAmount,
+		TaxableAmount: data.NetAmount,
+		TaxAmount:     data.TaxAmount,
+		Simulated:     data.Simulated,
+		Inconclusive:  data.Inconclusive,
+	}
+}
+
+func (s *Server) handleInvoiceOCRPreview(w http.ResponseWriter, r *http.Request) {
+	claims := claimsFromContext(r.Context())
+	tenantID := claims.OrganizationID
+
+	if err := r.ParseMultipartForm(16 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "Expected multipart/form-data with a 'file' part: "+err.Error())
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Missing 'file' part: "+err.Error())
+		return
+	}
+	defer file.Close()
+
+	s3Key := fmt.Sprintf("tmp/ocr-preview/%s/%d/%s", tenantID, time.Now().UnixNano(), filepath.Base(header.Filename))
+	if _, _, err := s.Store.Save(s3Key, file); err != nil {
+		writeJSON(w, http.StatusOK, InvoiceOCRPreviewResponse{OCRAvailable: false, Error: "preview image could not be stored"})
+		return
+	}
+
+	run, err := s.startInvoiceOCRPreviewWorkflow(context.Background(), tenantID, s3Key)
+	if err != nil {
+		writeJSON(w, http.StatusOK, InvoiceOCRPreviewResponse{OCRAvailable: false, Error: "OCR preview could not be started"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	var data validation.InvoiceData
+	if err := run.Get(ctx, &data); err != nil {
+		timedOut := ctx.Err() == context.DeadlineExceeded
+		resp := InvoiceOCRPreviewResponse{OCRAvailable: false, TimedOut: timedOut}
+		if timedOut {
+			resp.Error = "OCR preview timed out"
+		} else {
+			resp.Error = "OCR preview failed"
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, previewResponseFromInvoiceData(data))
 }
 
 // Ingestion request payload
@@ -359,11 +445,57 @@ func (s *Server) handleUploadSupportingDocument(w http.ResponseWriter, r *http.R
 	if docType == "" {
 		docType = "SUPPORTING_DOCUMENT"
 	}
+	docType = strings.ToUpper(strings.TrimSpace(docType))
+
+	existingDoc, existingDocErr := s.Repo.GetDocumentByInvoiceAndType(r.Context(), tenantID, inv.ID, docType)
+	if existingDocErr == nil && !canAppendDocumentVersion(claims.Role) {
+		writeError(w, http.StatusForbidden, "Only managers and admins can replace an existing document")
+		return
+	}
 
 	s3Key := "uploads/" + tenantID + "/" + inv.ID + "/" + header.Filename
 	hash, size, err := s.Store.Save(s3Key, file)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to store uploaded file: "+err.Error())
+		return
+	}
+
+	if existingDocErr == nil {
+		ver := &db.DocumentVersion{
+			DocumentID: existingDoc.ID,
+			S3Key:      s3Key,
+			SHA256Hash: hash,
+			Metadata:   json.RawMessage(fmt.Sprintf(`{"size_bytes":%d,"original_filename":%q,"replacement":true}`, size, header.Filename)),
+			CreatedBy:  claims.UserID,
+		}
+		if err := s.Repo.AppendDocumentVersion(r.Context(), tenantID, ver); err != nil {
+			writeError(w, http.StatusInternalServerError, "Failed to append document version: "+err.Error())
+			return
+		}
+		_ = s.Repo.WriteAuditLog(r.Context(), tenantID, inv.ID, "DOCUMENT_VERSION_UPLOADED", claims.Email, "Document replacement uploaded: "+docType, map[string]interface{}{"document_id": existingDoc.ID, "version_number": ver.VersionNumber, "file_name": header.Filename})
+
+		if docType == "INVOICE_PAGE" {
+			writeJSON(w, http.StatusCreated, map[string]interface{}{
+				"document_id":    existingDoc.ID,
+				"invoice_id":     inv.ID,
+				"version_number": ver.VersionNumber,
+				"status":         "DOCUMENT_VERSION_APPENDED",
+			})
+			return
+		}
+
+		we, err := s.startLedgerDocumentWorkflow(context.Background(), tenantID, inv.ID, existingDoc.ID, s3Key)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "Document version stored, but failed to start matching workflow: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]interface{}{
+			"document_id":    existingDoc.ID,
+			"invoice_id":     inv.ID,
+			"version_number": ver.VersionNumber,
+			"workflow_id":    we.GetID(),
+			"status":         "DOCUMENT_VERSION_APPENDED",
+		})
 		return
 	}
 
@@ -390,6 +522,15 @@ func (s *Server) handleUploadSupportingDocument(w http.ResponseWriter, r *http.R
 
 	_ = s.Repo.WriteAuditLog(r.Context(), tenantID, inv.ID, "SUPPORTING_DOCUMENT_UPLOADED", claims.Email, "Supporting document uploaded: "+docType, map[string]interface{}{"document_id": doc.ID, "file_name": header.Filename})
 
+	if docType == "INVOICE_PAGE" {
+		writeJSON(w, http.StatusCreated, map[string]string{
+			"document_id": doc.ID,
+			"invoice_id":  inv.ID,
+			"status":      "DOCUMENT_STORED",
+		})
+		return
+	}
+
 	we, err := s.startLedgerDocumentWorkflow(context.Background(), tenantID, inv.ID, doc.ID, s3Key)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Document stored, but failed to start matching workflow: "+err.Error())
@@ -402,6 +543,10 @@ func (s *Server) handleUploadSupportingDocument(w http.ResponseWriter, r *http.R
 		"workflow_id": we.GetID(),
 		"status":      "DOCUMENT_STORED_MATCHING_STARTED",
 	})
+}
+
+func canAppendDocumentVersion(role string) bool {
+	return role == "ADMIN" || role == "MANAGER"
 }
 
 // ExceptionView adds the invoice's human-readable number to an
@@ -552,16 +697,17 @@ func (s *Server) handleUploadLedgerInvoice(w http.ResponseWriter, r *http.Reques
 		buyerID = &buyer.ID
 	}
 
-	// Amount fields — accept mobile naming (taxable_amount / total_amount) as well
+	// Amount fields — mobile sends taxable_amount + total_amount. Store the
+	// invoice total as gross_amount; tax_amount is total-taxable.
 	grossAmount, _ := strconv.ParseFloat(r.FormValue("gross_amount"), 64)
-	if grossAmount == 0 {
-		grossAmount, _ = strconv.ParseFloat(r.FormValue("taxable_amount"), 64)
-	}
 	taxAmount, _ := strconv.ParseFloat(r.FormValue("tax_amount"), 64)
-	if taxAmount == 0 {
-		if total, err := strconv.ParseFloat(r.FormValue("total_amount"), 64); err == nil && total > grossAmount {
-			taxAmount = total - grossAmount
+	if total, err := strconv.ParseFloat(r.FormValue("total_amount"), 64); err == nil && total > 0 {
+		grossAmount = total
+		if taxable, terr := strconv.ParseFloat(r.FormValue("taxable_amount"), 64); terr == nil && taxable > 0 {
+			taxAmount = total - taxable
 		}
+	} else if grossAmount == 0 {
+		grossAmount, _ = strconv.ParseFloat(r.FormValue("taxable_amount"), 64)
 	}
 
 	currency := strings.TrimSpace(r.FormValue("currency"))
@@ -734,7 +880,7 @@ func (s *Server) handleGetDocumentContent(w http.ResponseWriter, r *http.Request
 	tenantID := claimsFromContext(r.Context()).OrganizationID
 	documentID := r.PathValue("id")
 
-	ver, err := s.Repo.GetLatestDocumentVersion(r.Context(), tenantID, documentID)
+	ver, err := s.documentVersionFromRequest(r, tenantID, documentID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "Document not found")
 		return
@@ -753,6 +899,37 @@ func (s *Server) handleGetDocumentContent(w http.ResponseWriter, r *http.Request
 	}
 	w.Header().Set("Content-Type", contentType)
 	_, _ = io.Copy(w, f)
+}
+
+func (s *Server) documentVersionFromRequest(r *http.Request, tenantID, documentID string) (*db.DocumentVersion, error) {
+	versionParam := strings.TrimSpace(r.URL.Query().Get("version"))
+	if versionParam == "" {
+		return s.Repo.GetLatestDocumentVersion(r.Context(), tenantID, documentID)
+	}
+	versionNumber, err := strconv.Atoi(versionParam)
+	if err != nil || versionNumber < 1 {
+		return nil, fmt.Errorf("invalid version")
+	}
+	return s.Repo.GetDocumentVersion(r.Context(), tenantID, documentID, versionNumber)
+}
+
+func (s *Server) handleListDocumentVersions(w http.ResponseWriter, r *http.Request) {
+	tenantID := claimsFromContext(r.Context()).OrganizationID
+	documentID := r.PathValue("id")
+
+	if _, err := s.Repo.GetDocument(r.Context(), tenantID, documentID); err != nil {
+		writeError(w, http.StatusNotFound, "Document not found")
+		return
+	}
+	versions, err := s.Repo.ListDocumentVersions(r.Context(), tenantID, documentID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to list document versions: "+err.Error())
+		return
+	}
+	if versions == nil {
+		versions = []*db.DocumentVersion{}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"versions": versions})
 }
 
 type CreateBuyerRequest struct {
@@ -968,9 +1145,9 @@ func (s *Server) handleSeedAdminData(w http.ResponseWriter, r *http.Request) {
 	// Three real Meridian seller legal entities (from invoice series analysis)
 	type entitySpec struct{ name, gstin string }
 	entitySpecs := []entitySpec{
-		{"Meridian Brothers", "06AAAAA0003A1Z3"},         // partnership — A26/Britannia+dairy, BIB/BRU
-		{"Meridian Distributors", "06AAAAA0015A1ZF"},     // proprietorship — CAD/Mondelez, MORDE/bulk chocolate, GST05/HUL-Lakme
-		{"Meridian Gurgaon", "06AAAAA0017A1ZH"},              // sole proprietorship — DBR/Nestlé, HAL/Haleon-GSK
+		{"Meridian Brothers", "06AAAAA0003A1Z3"},     // partnership — A26/Britannia+dairy, BIB/BRU
+		{"Meridian Distributors", "06AAAAA0015A1ZF"}, // proprietorship — CAD/Mondelez, MORDE/bulk chocolate, GST05/HUL-Lakme
+		{"Meridian Gurgaon", "06AAAAA0017A1ZH"},          // sole proprietorship — DBR/Nestlé, HAL/Haleon-GSK
 	}
 	createdEntities := make([]map[string]string, 0, len(entitySpecs))
 	var firstEnt *db.Entity
@@ -1000,9 +1177,9 @@ func (s *Server) handleSeedAdminData(w http.ResponseWriter, r *http.Request) {
 		isBuyerGenerated bool
 	}
 	type buyerSeedSpec struct {
-		name string
+		name  string
 		gstin string
-		reqs []buyerReqSpec
+		reqs  []buyerReqSpec
 	}
 	buyerSeeds := []buyerSeedSpec{
 		{
@@ -1012,14 +1189,49 @@ func (s *Server) handleSeedAdminData(w http.ResponseWriter, r *http.Request) {
 				{"GATE_ENTRY_NOTE", "Gate Entry / Discrepancy Note", true},
 			},
 		},
-		{name: "Flipkart India Private Limited", gstin: "06AAAAA0004A1Z4"},
-		{name: "Max Hypermarket India Pvt Ltd", gstin: "06AAAAA0009A1Z9"},
-		{name: "Innovative Retail Concepts Pvt Ltd", gstin: "09AAAAA0018A1ZI"},
+		{
+			name:  "Flipkart India Private Limited",
+			gstin: "06AAAAA0004A1Z4",
+			reqs: []buyerReqSpec{
+				{"GRN_SEAL", "GRN Seal", true},
+			},
+		},
+		{
+			name:  "Max Hypermarket India Pvt Ltd",
+			gstin: "06AAAAA0009A1Z9",
+			reqs: []buyerReqSpec{
+				{"SECURITY_INWARD_STAMP", "Security Inward Stamp", true},
+			},
+		},
+		{
+			name:  "Innovative Retail Concepts Pvt Ltd",
+			gstin: "09AAAAA0018A1ZI",
+			reqs: []buyerReqSpec{
+				{"STOCK_RECEIVING_ACK", "BB Stock Receiving Acknowledgement", true},
+			},
+		},
+		{
+			name:  "Zepto Limited",
+			gstin: "06AAAAA0014A1ZE",
+			reqs: []buyerReqSpec{
+				{"GATE_ENTRY_NOTE", "Gate / Inward Receipt", true},
+			},
+		},
+		{
+			name:  "V-Mart Retail Limited",
+			gstin: "06AAAAA0006A1Z6",
+			reqs: []buyerReqSpec{
+				{"GATE_ENTRY_NOTE", "Gate Entry / Receiving Note", true},
+			},
+		},
 	}
 	for _, bs := range buyerSeeds {
 		buyer, berr := s.Repo.CreateBuyer(r.Context(), org.ID, bs.name, bs.gstin, haryanaAddr)
 		if berr != nil {
-			continue // buyer may already exist from a previous seed call
+			buyer, berr = s.Repo.GetBuyerByGSTIN(r.Context(), org.ID, bs.gstin)
+			if berr != nil {
+				continue // buyer may already exist from a previous seed call in another org
+			}
 		}
 		for _, rspec := range bs.reqs {
 			_ = s.Repo.UpsertBuyerDocRequirement(r.Context(), org.ID, &db.BuyerDocRequirement{
@@ -1054,6 +1266,7 @@ func (s *Server) handleSeedAdminData(w http.ResponseWriter, r *http.Request) {
 		{"worker+" + orgSuffix + "@demo.local", "Demo Worker", "WORKER"},
 		{"manager+" + orgSuffix + "@demo.local", "Demo Manager", "MANAGER"},
 		{"finance+" + orgSuffix + "@demo.local", "Demo Finance", "FINANCE"},
+		{"reviewer+" + orgSuffix + "@demo.local", "Demo Reviewer", "REVIEWER"},
 	}
 	createdUsers := make([]map[string]string, 0, len(demoUsers))
 	for _, du := range demoUsers {

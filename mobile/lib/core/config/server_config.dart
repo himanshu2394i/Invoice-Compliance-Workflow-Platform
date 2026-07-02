@@ -4,7 +4,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 /// restarts via encrypted secure storage. Change it from the Settings screen.
 class ServerConfig {
   static const _key = 'server_base_url';
-  static const defaultUrl = 'http://10.0.2.2:8000';
+  static const defaultUrl = 'https://203-0-113-10.sslip.io';
 
   static final _storage = const FlutterSecureStorage(
     aOptions: AndroidOptions(encryptedSharedPreferences: true),

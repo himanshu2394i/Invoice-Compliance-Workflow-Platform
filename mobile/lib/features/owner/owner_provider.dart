@@ -31,6 +31,34 @@ class OwnerDashboard {
       );
 }
 
+class AlertItem {
+  final String type; // "exception" | "dispute"
+  final String invoiceId;
+  final String invoiceNumber;
+  final String subtype;
+  final String description;
+  final DateTime raisedAt;
+
+  const AlertItem({
+    required this.type,
+    required this.invoiceId,
+    required this.invoiceNumber,
+    required this.subtype,
+    required this.description,
+    required this.raisedAt,
+  });
+
+  factory AlertItem.fromJson(Map<String, dynamic> j) => AlertItem(
+        type: j['type'] as String? ?? '',
+        invoiceId: j['invoice_id'] as String? ?? '',
+        invoiceNumber: j['invoice_number'] as String? ?? '',
+        subtype: j['subtype'] as String? ?? '',
+        description: j['description'] as String? ?? '',
+        raisedAt: DateTime.tryParse(j['raised_at'] as String? ?? '') ??
+            DateTime.now(),
+      );
+}
+
 class OwnerInvoice {
   final String id;
   final String invoiceNumber;
@@ -102,13 +130,36 @@ class InvoiceDocument {
   String get friendlyLabel {
     return switch (documentType) {
       'INVOICE' => 'Tax Invoice',
+      'INVOICE_PAGE' => 'Tax Invoice',
       'GATE_ENTRY_NOTE' => 'Gate Entry Note',
       'CREDIT_NOTE' => 'Credit Note',
       'GRN' => 'Goods Receipt Note',
-      _ => documentType.replaceAll('_', ' ').toLowerCase()
-          .split(' ').map((w) => w.isEmpty ? w : '${w[0].toUpperCase()}${w.substring(1)}').join(' '),
+      _ => documentType
+          .replaceAll('_', ' ')
+          .toLowerCase()
+          .split(' ')
+          .map((w) => w.isEmpty ? w : '${w[0].toUpperCase()}${w.substring(1)}')
+          .join(' '),
     };
   }
+}
+
+class DocumentVersion {
+  final int versionNumber;
+  final String createdBy;
+  final String createdAt;
+
+  const DocumentVersion({
+    required this.versionNumber,
+    required this.createdBy,
+    required this.createdAt,
+  });
+
+  factory DocumentVersion.fromJson(Map<String, dynamic> j) => DocumentVersion(
+        versionNumber: (j['version_number'] as num? ?? 0).toInt(),
+        createdBy: j['created_by'] as String? ?? '',
+        createdAt: j['created_at'] as String? ?? '',
+      );
 }
 
 class InvoiceException {
@@ -209,6 +260,30 @@ class InvoiceDetail {
   }
 }
 
+class AuditEvent {
+  final String id;
+  final String eventType;
+  final String actorId;
+  final String description;
+  final String createdAt;
+
+  const AuditEvent({
+    required this.id,
+    required this.eventType,
+    required this.actorId,
+    required this.description,
+    required this.createdAt,
+  });
+
+  factory AuditEvent.fromJson(Map<String, dynamic> j) => AuditEvent(
+        id: j['id'] as String,
+        eventType: j['event_type'] as String? ?? '',
+        actorId: j['actor_id'] as String? ?? '',
+        description: j['description'] as String? ?? '',
+        createdAt: j['created_at'] as String? ?? '',
+      );
+}
+
 // ─── API Service ─────────────────────────────────────────────────────────────
 
 class OwnerService {
@@ -221,13 +296,23 @@ class OwnerService {
     return OwnerDashboard.fromJson(resp.data as Map<String, dynamic>);
   }
 
-  Future<List<OwnerInvoice>> listInvoices({int offset = 0, int limit = 30}) async {
+  Future<List<AlertItem>> getAlerts() async {
+    final resp = await _dio.get(Endpoints.ownerAlerts);
+    return (resp.data['alerts'] as List? ?? [])
+        .map((a) => AlertItem.fromJson(a as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<List<OwnerInvoice>> listInvoices(
+      {int offset = 0, int limit = 30}) async {
     final resp = await _dio.get(
       Endpoints.ownerInvoices,
       queryParameters: {'offset': offset, 'limit': limit},
     );
     final list = resp.data['invoices'] as List? ?? [];
-    return list.map((j) => OwnerInvoice.fromJson(j as Map<String, dynamic>)).toList();
+    return list
+        .map((j) => OwnerInvoice.fromJson(j as Map<String, dynamic>))
+        .toList();
   }
 
   Future<InvoiceDetail> getInvoiceDetail(String invoiceId) async {
@@ -248,7 +333,8 @@ class OwnerService {
     return InvoiceDispute.fromJson(resp.data as Map<String, dynamic>);
   }
 
-  Future<InvoiceDispute> updateDispute(String id, String status, {String notes = ''}) async {
+  Future<InvoiceDispute> updateDispute(String id, String status,
+      {String notes = ''}) async {
     final resp = await _dio.patch(
       Endpoints.dispute(id),
       data: {'status': status, 'notes': notes},
@@ -264,7 +350,8 @@ class OwnerService {
         contentType: DioMediaType('image', 'jpeg'),
       ),
     });
-    final resp = await _dio.post(Endpoints.disputeCreditNote(disputeId), data: formData);
+    final resp =
+        await _dio.post(Endpoints.disputeCreditNote(disputeId), data: formData);
     return resp.data['document_id'] as String;
   }
 
@@ -293,15 +380,47 @@ class OwnerService {
     );
   }
 
+  Future<List<AuditEvent>> getAuditTrail(String invoiceId) async {
+    final resp = await _dio.get(Endpoints.invoiceAuditTrail(invoiceId));
+    final list = resp.data as List? ?? [];
+    return list
+        .map((j) => AuditEvent.fromJson(j as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<void> resolveException(String exceptionId, String status) async {
+    await _dio.post(Endpoints.exceptionResolve(exceptionId),
+        data: {'status': status});
+  }
+
+  Future<void> approveInvoice(String invoiceId,
+      {required bool approved, String comments = ''}) async {
+    await _dio.post(Endpoints.invoiceApprove(invoiceId), data: {
+      'approved': approved,
+      'comments': comments,
+    });
+  }
+
   /// Downloads a document to the app's documents directory.
   /// Returns the local path where it was saved.
-  Future<String> downloadDocument(String invoiceId, String docId) async {
+  Future<List<DocumentVersion>> listDocumentVersions(String docId) async {
+    final resp = await _dio.get(Endpoints.documentVersions(docId));
+    return (resp.data['versions'] as List? ?? [])
+        .map((j) => DocumentVersion.fromJson(j as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<String> downloadDocument(String invoiceId, String docId,
+      {int? versionNumber}) async {
     final dir = await getApplicationDocumentsDirectory();
-    final savePath = '${dir.path}/downloads/${invoiceId}_$docId.jpg';
+    final suffix = versionNumber == null ? 'latest' : 'v$versionNumber';
+    final savePath = '${dir.path}/downloads/${invoiceId}_${docId}_$suffix.jpg';
     await Directory('${dir.path}/downloads').create(recursive: true);
     await _dio.download(
       Endpoints.ownerDocumentContent(invoiceId, docId),
       savePath,
+      queryParameters:
+          versionNumber == null ? null : {'version': versionNumber},
     );
     return savePath;
   }
@@ -313,6 +432,10 @@ final ownerService = OwnerService();
 
 final ownerDashboardProvider = FutureProvider<OwnerDashboard>((ref) async {
   return ownerService.getDashboard();
+});
+
+final ownerAlertsProvider = FutureProvider<List<AlertItem>>((ref) async {
+  return ownerService.getAlerts();
 });
 
 final ownerInvoicesProvider = FutureProvider<List<OwnerInvoice>>((ref) async {

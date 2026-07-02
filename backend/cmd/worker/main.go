@@ -68,8 +68,11 @@ func main() {
 	w := worker.New(c, "invoice-task-queue", worker.Options{})
 
 	w.RegisterWorkflow(workflow.InvoiceWorkflow)
+	w.RegisterWorkflow(workflow.InvoiceOCRPreviewWorkflow)
 	w.RegisterActivity(workflow.ExtractInvoiceDataActivity)
 	w.RegisterActivity(workflow.ValidateInvoiceActivity)
+	w.RegisterActivity(workflow.ValidateInvoiceAgainstRecordActivity)
+	w.RegisterActivity(workflow.RaiseValidationExceptionActivity)
 	w.RegisterActivity(workflow.UpdateInvoiceStateActivity)
 	w.RegisterActivity(workflow.LogAuditEventActivity)
 	w.RegisterActivity(workflow.FetchTenantRulesActivity)

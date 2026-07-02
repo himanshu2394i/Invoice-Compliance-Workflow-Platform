@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/models/bundle.dart';
+import '../../core/navigation/app_back.dart';
 import '../../core/storage/hive_service.dart';
 import '../capture/sync_service.dart';
 
@@ -60,81 +61,97 @@ class _QueueScreenState extends ConsumerState<QueueScreen> {
     final bundles = HiveService.allBundles();
     final pending = bundles.where((b) => b.status != 'synced').length;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Upload Queue'),
-        actions: [
-          if (pending > 0)
-            TextButton.icon(
-              onPressed: _syncing ? null : _syncNow,
-              icon: _syncing
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.sync),
-              label: Text('Sync ($pending)'),
+    return AppBackScope(
+      fallbackLocation: '/home',
+      child: Scaffold(
+        appBar: AppBar(
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            tooltip: 'Back',
+            onPressed: () => AppBackScope.goBack(
+              context,
+              fallbackLocation: '/home',
             ),
-        ],
-      ),
-      body: bundles.isEmpty
-          ? const Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.inbox, size: 64, color: Colors.grey),
-                  SizedBox(height: 16),
-                  Text('No bundles yet', style: TextStyle(color: Colors.grey)),
-                ],
+          ),
+          title: const Text('Upload Queue'),
+          actions: [
+            if (pending > 0)
+              TextButton.icon(
+                onPressed: _syncing ? null : _syncNow,
+                icon: _syncing
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.sync),
+                label: Text('Sync ($pending)'),
               ),
-            )
-          : ListView.builder(
-              padding: const EdgeInsets.all(12),
-              itemCount: bundles.length,
-              itemBuilder: (context, i) {
-                final b = bundles[i];
-                final date = DateTime.fromMillisecondsSinceEpoch(b.createdAtMs);
-                return Card(
-                  child: ListTile(
-                    leading: Icon(
-                      _statusIcon(b.status),
-                      color: _statusColor(b.status),
-                    ),
-                    title: Text(b.invoiceNumber),
-                    subtitle: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('${b.buyerName}  •  ₹${b.totalAmount.toStringAsFixed(2)}'),
-                        Text(
-                          '${date.day.toString().padLeft(2, '0')}/'
-                          '${date.month.toString().padLeft(2, '0')}/'
-                          '${date.year}  ${date.hour.toString().padLeft(2, '0')}:'
-                          '${date.minute.toString().padLeft(2, '0')}',
-                          style: const TextStyle(fontSize: 12, color: Colors.grey),
-                        ),
-                        if (b.syncError != null)
-                          Text(
-                            b.syncError!,
-                            style: const TextStyle(
-                                fontSize: 11, color: Colors.redAccent),
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                      ],
-                    ),
-                    trailing: Chip(
-                      label: Text(
-                        b.status.toUpperCase(),
-                        style: const TextStyle(fontSize: 10, color: Colors.white),
+          ],
+        ),
+        body: bundles.isEmpty
+            ? const Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.inbox, size: 64, color: Colors.grey),
+                    SizedBox(height: 16),
+                    Text('No bundles yet',
+                        style: TextStyle(color: Colors.grey)),
+                  ],
+                ),
+              )
+            : ListView.builder(
+                padding: const EdgeInsets.all(12),
+                itemCount: bundles.length,
+                itemBuilder: (context, i) {
+                  final b = bundles[i];
+                  final date =
+                      DateTime.fromMillisecondsSinceEpoch(b.createdAtMs);
+                  return Card(
+                    child: ListTile(
+                      leading: Icon(
+                        _statusIcon(b.status),
+                        color: _statusColor(b.status),
                       ),
-                      backgroundColor: _statusColor(b.status),
-                      padding: EdgeInsets.zero,
+                      title: Text(b.invoiceNumber),
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                              '${b.buyerName}  •  ₹${b.totalAmount.toStringAsFixed(2)}'),
+                          Text(
+                            '${date.day.toString().padLeft(2, '0')}/'
+                            '${date.month.toString().padLeft(2, '0')}/'
+                            '${date.year}  ${date.hour.toString().padLeft(2, '0')}:'
+                            '${date.minute.toString().padLeft(2, '0')}',
+                            style: const TextStyle(
+                                fontSize: 12, color: Colors.grey),
+                          ),
+                          if (b.syncError != null)
+                            Text(
+                              b.syncError!,
+                              style: const TextStyle(
+                                  fontSize: 11, color: Colors.redAccent),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                        ],
+                      ),
+                      trailing: Chip(
+                        label: Text(
+                          b.status.toUpperCase(),
+                          style: const TextStyle(
+                              fontSize: 10, color: Colors.white),
+                        ),
+                        backgroundColor: _statusColor(b.status),
+                        padding: EdgeInsets.zero,
+                      ),
                     ),
-                  ),
-                );
-              },
-            ),
+                  );
+                },
+              ),
+      ),
     );
   }
 }

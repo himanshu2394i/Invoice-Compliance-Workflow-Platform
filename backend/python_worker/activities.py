@@ -106,18 +106,21 @@ def _extract_via_textract(image_path: str):
 
     # GSTIN has no dedicated Textract field type -- search the generic
     # label/value pairs Textract still recognized but couldn't classify.
-    gstin = ""
+    gstins = []
     for text in label_value_pairs:
-        match = GSTIN_REGEX.search(text.upper())
-        if match:
-            gstin = match.group(0)
-            break
+        for match in GSTIN_REGEX.finditer(text.upper()):
+            if match.group(0) not in gstins:
+                gstins.append(match.group(0))
 
     return {
+        "InvoiceNumber": summary_fields.get("INVOICE_RECEIPT_ID", "") or "",
         "GrossAmount": gross,
         "NetAmount": net,
         "TaxAmount": tax,
-        "VendorGSTIN": gstin,
+        "VendorGSTIN": gstins[0] if gstins else "",
+        "BuyerGSTIN": gstins[1] if len(gstins) > 1 else "",
+        "Simulated": False,
+        "Inconclusive": False,
     }
 
 def _extract_header_via_textract(image_path: str):
@@ -167,11 +170,13 @@ def _extract_header_via_textract(image_path: str):
         if not invoice_number and ("INVOICE" in upper_label or "BILL" in upper_label):
             invoice_number = value.strip()
 
+    inconclusive = not invoice_number and not gstin and amount is None
     return {
         "InvoiceNumber": invoice_number,
         "BuyerGSTIN": gstin,
         "Amount": amount,
         "Simulated": False,
+        "Inconclusive": inconclusive,
     }
 
 
@@ -207,6 +212,7 @@ async def extract_document_header(storage_key: str) -> dict:
         "BuyerGSTIN": "",
         "Amount": None,
         "Simulated": True,
+        "Inconclusive": True,
     }
 
 
@@ -253,7 +259,9 @@ async def extract_text_and_layout(storage_key: str) -> dict:
                 "GrossAmount": 15000.00,
                 "NetAmount": 13500.00,
                 "TaxAmount": 1500.00,
-                "VendorGSTIN": "06AAAAA0017A1ZH"
+                "VendorGSTIN": "06AAAAA0017A1ZH",
+                "Simulated": True,
+                "Inconclusive": True,
             }
         except Exception as e:
             activity.logger.error(f"Inference failed: {e}")
@@ -266,7 +274,9 @@ async def extract_text_and_layout(storage_key: str) -> dict:
         "GrossAmount": 15000.00,
         "NetAmount": 13500.00,
         "TaxAmount": 1500.00,
-        "VendorGSTIN": "06AAAAA0017A1ZH"
+        "VendorGSTIN": "06AAAAA0017A1ZH",
+        "Simulated": True,
+        "Inconclusive": True,
     }
 
     return extracted_data
@@ -304,12 +314,10 @@ async def ai_resolve_discrepancy(context_data: dict) -> dict:
         except Exception as e:
             activity.logger.error(f"AI Inference failed: {e}")
             
-    # Simulation fallback
-    activity.logger.info("AI Simulation Mode: Auto-resolving minor discrepancy")
-    await asyncio.sleep(2.0)
-    
-    # Assume the agent looked at it and found a 1 cent rounding error
+    # Fail closed: without a real model decision, require human review.
+    activity.logger.info("AI unavailable; escalating discrepancy to human review")
+    await asyncio.sleep(0.2)
     return {
-        "resolved": True,
-        "reasoning": "AI resolved: Detected a harmless 1-cent floating point rounding error in Tax Calculation."
+        "resolved": False,
+        "reasoning": "AI unavailable; human review required."
     }

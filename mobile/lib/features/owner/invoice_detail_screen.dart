@@ -1,7 +1,9 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
+import 'package:image_picker/image_picker.dart';
+import '../../core/navigation/app_back.dart';
+import '../auth/auth_provider.dart';
 import 'owner_provider.dart';
 
 class InvoiceDetailScreen extends ConsumerStatefulWidget {
@@ -9,7 +11,8 @@ class InvoiceDetailScreen extends ConsumerStatefulWidget {
   const InvoiceDetailScreen({super.key, required this.invoiceId});
 
   @override
-  ConsumerState<InvoiceDetailScreen> createState() => _InvoiceDetailScreenState();
+  ConsumerState<InvoiceDetailScreen> createState() =>
+      _InvoiceDetailScreenState();
 }
 
 class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
@@ -34,26 +37,149 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
     super.dispose();
   }
 
-  Future<void> _downloadDoc(String docId) async {
-    setState(() => _downloading[docId] = true);
+  Future<void> _viewDoc(String docId, {int? versionNumber}) async {
+    var path = _downloadedPaths[docId];
+    if (versionNumber != null) path = null;
+    if (path == null) {
+      setState(() => _downloading[docId] = true);
+      try {
+        path = await ownerService.downloadDocument(widget.invoiceId, docId,
+            versionNumber: versionNumber);
+        setState(() {
+          if (versionNumber == null) _downloadedPaths[docId] = path!;
+          _downloading[docId] = false;
+        });
+      } catch (e) {
+        setState(() => _downloading[docId] = false);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+                content: Text('Failed to load document: $e'),
+                backgroundColor: Colors.red),
+          );
+        }
+        return;
+      }
+    }
+    if (mounted) {
+      Navigator.of(context).push(
+        MaterialPageRoute(
+            builder: (_) => _DocumentViewerScreen(imagePath: path!)),
+      );
+    }
+  }
+
+  Future<void> _showDocumentVersions(InvoiceDocument doc) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => FutureBuilder<List<DocumentVersion>>(
+        future: ownerService.listDocumentVersions(doc.id),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState != ConnectionState.done) {
+            return const SizedBox(
+              height: 180,
+              child: Center(child: CircularProgressIndicator()),
+            );
+          }
+          final versions = snapshot.data ?? [];
+          if (versions.isEmpty) {
+            return const SizedBox(
+              height: 160,
+              child: Center(child: Text('No version history')),
+            );
+          }
+          return ListView.separated(
+            shrinkWrap: true,
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+            itemBuilder: (context, i) {
+              final version = versions[i];
+              final uploadedAt = version.createdAt.length >= 16
+                  ? version.createdAt.substring(0, 16).replaceFirst('T', ' ')
+                  : version.createdAt;
+              return ListTile(
+                leading: const Icon(Icons.history),
+                title: Text('Version ${version.versionNumber}'),
+                subtitle: Text(uploadedAt),
+                trailing: const Icon(Icons.visibility_outlined),
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  _viewDoc(doc.id, versionNumber: version.versionNumber);
+                },
+              );
+            },
+            separatorBuilder: (_, __) => const Divider(height: 1),
+            itemCount: versions.length,
+          );
+        },
+      ),
+    );
+  }
+
+  bool _resolvingException = false;
+
+  Future<void> _resolveException(String exceptionId, String status) async {
+    setState(() => _resolvingException = true);
     try {
-      final path = await ownerService.downloadDocument(widget.invoiceId, docId);
-      setState(() {
-        _downloadedPaths[docId] = path;
-        _downloading[docId] = false;
-      });
+      await ownerService.resolveException(exceptionId, status);
+      ref.invalidate(ownerInvoiceDetailProvider(widget.invoiceId));
+    } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Saved to: $path')),
+          SnackBar(content: Text('Failed: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _resolvingException = false);
+    }
+  }
+
+  bool _approving = false;
+
+  Future<void> _approveInvoice(bool approved) async {
+    final commentsCtrl = TextEditingController();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(approved ? 'Approve Invoice' : 'Reject Invoice'),
+        content: TextField(
+          controller: commentsCtrl,
+          maxLines: 2,
+          decoration: const InputDecoration(
+              labelText: 'Comments (optional)', border: OutlineInputBorder()),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text(approved ? 'Approve' : 'Reject')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    setState(() => _approving = true);
+    try {
+      await ownerService.approveInvoice(widget.invoiceId,
+          approved: approved, comments: commentsCtrl.text.trim());
+      ref.invalidate(ownerInvoiceDetailProvider(widget.invoiceId));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content:
+                  Text(approved ? 'Invoice approved.' : 'Invoice rejected.')),
         );
       }
     } catch (e) {
-      setState(() => _downloading[docId] = false);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Download failed: $e'), backgroundColor: Colors.red),
+          SnackBar(content: Text('Failed: $e'), backgroundColor: Colors.red),
         );
       }
+    } finally {
+      if (mounted) setState(() => _approving = false);
     }
   }
 
@@ -92,24 +218,45 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
   Widget build(BuildContext context) {
     final detailAsync = ref.watch(ownerInvoiceDetailProvider(widget.invoiceId));
 
-    return Scaffold(
-      appBar: AppBar(
-        title: detailAsync.when(
-          data: (d) => Text(d.invoice.invoiceNumber),
-          loading: () => const Text('Invoice'),
-          error: (_, __) => const Text('Invoice'),
-        ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: () => ref.invalidate(ownerInvoiceDetailProvider(widget.invoiceId)),
+    return AppBackScope(
+      fallbackLocation: '/owner/invoices',
+      child: Scaffold(
+        appBar: AppBar(
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            tooltip: 'Back',
+            onPressed: () => AppBackScope.goBack(
+              context,
+              fallbackLocation: '/owner/invoices',
+            ),
           ),
-        ],
-      ),
-      body: detailAsync.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(child: Text('Error: $e')),
-        data: (detail) => _buildBody(context, detail),
+          title: detailAsync.when(
+            data: (d) => Text(d.invoice.invoiceNumber),
+            loading: () => const Text('Invoice'),
+            error: (_, __) => const Text('Invoice'),
+          ),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.history_edu_outlined),
+              tooltip: 'Audit trail',
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(
+                    builder: (_) =>
+                        _AuditTrailScreen(invoiceId: widget.invoiceId)),
+              ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.refresh),
+              onPressed: () =>
+                  ref.invalidate(ownerInvoiceDetailProvider(widget.invoiceId)),
+            ),
+          ],
+        ),
+        body: detailAsync.when(
+          loading: () => const Center(child: CircularProgressIndicator()),
+          error: (e, _) => Center(child: Text('Error: $e')),
+          data: (detail) => _buildBody(context, detail),
+        ),
       ),
     );
   }
@@ -117,6 +264,11 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
   Widget _buildBody(BuildContext context, InvoiceDetail detail) {
     final inv = detail.invoice;
     final groups = detail.documentGroups;
+    final role = ref.watch(currentUserProvider)?['role'];
+    final canApprove =
+        (role == 'MANAGER' || role == 'FINANCE' || role == 'ADMIN') &&
+            inv.currentState.startsWith('PENDING');
+    final canViewDocumentHistory = role == 'ADMIN' || role == 'MANAGER';
 
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -151,29 +303,91 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
 
         const SizedBox(height: 16),
 
+        if (canApprove) ...[
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: _approving ? null : () => _approveInvoice(false),
+                  style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
+                  child: const Text('Reject'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: FilledButton(
+                  onPressed: _approving ? null : () => _approveInvoice(true),
+                  child: _approving
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white),
+                        )
+                      : const Text('Approve'),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+        ],
+
         // Disputes section
         if (detail.disputes.isNotEmpty) ...[
           _SectionHeader('Disputes (${detail.disputes.length})', Icons.gavel),
           ...detail.disputes.map((d) => _DisputeCard(
                 dispute: d,
                 invoiceId: widget.invoiceId,
-                onUpdate: () => ref.invalidate(ownerInvoiceDetailProvider(widget.invoiceId)),
+                onUpdate: () => ref
+                    .invalidate(ownerInvoiceDetailProvider(widget.invoiceId)),
               )),
           const SizedBox(height: 16),
         ],
 
         // Exceptions section
         if (detail.exceptions.isNotEmpty) ...[
-          _SectionHeader('Exceptions (${detail.exceptions.length})', Icons.warning_amber),
+          _SectionHeader(
+              'Exceptions (${detail.exceptions.length})', Icons.warning_amber),
           ...detail.exceptions.map((e) => Card(
                 color: e.status == 'open' ? Colors.orange[50] : null,
-                child: ListTile(
-                  leading: Icon(
-                    e.status == 'open' ? Icons.warning_amber : Icons.check_circle,
-                    color: e.status == 'open' ? Colors.orange : Colors.green,
-                  ),
-                  title: Text(e.exceptionType.replaceAll('_', ' ')),
-                  subtitle: Text(e.status),
+                child: Column(
+                  children: [
+                    ListTile(
+                      leading: Icon(
+                        e.status == 'open'
+                            ? Icons.warning_amber
+                            : Icons.check_circle,
+                        color:
+                            e.status == 'open' ? Colors.orange : Colors.green,
+                      ),
+                      title: Text(e.exceptionType.replaceAll('_', ' ')),
+                      subtitle: Text(e.status),
+                    ),
+                    if (e.status == 'open')
+                      Padding(
+                        padding:
+                            const EdgeInsets.only(left: 8, right: 8, bottom: 8),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.end,
+                          children: [
+                            TextButton(
+                              onPressed: _resolvingException
+                                  ? null
+                                  : () =>
+                                      _resolveException(e.id, 'not_applicable'),
+                              child: const Text('Not Applicable'),
+                            ),
+                            const SizedBox(width: 8),
+                            FilledButton.tonal(
+                              onPressed: _resolvingException
+                                  ? null
+                                  : () => _resolveException(e.id, 'resolved'),
+                              child: const Text('Resolve'),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
                 ),
               )),
           const SizedBox(height: 16),
@@ -213,6 +427,7 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
             return Card(
               margin: const EdgeInsets.only(bottom: 6),
               child: ListTile(
+                onTap: isDownloading ? null : () => _viewDoc(doc.id),
                 leading: savedPath != null
                     ? ClipRRect(
                         borderRadius: BorderRadius.circular(4),
@@ -255,7 +470,13 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
                           _showGateEntryDialog(context, doc.id);
                         },
                       ),
-                    // Download button
+                    if (canViewDocumentHistory)
+                      IconButton(
+                        icon: const Icon(Icons.history, color: Colors.blueGrey),
+                        tooltip: 'Version history',
+                        onPressed: () => _showDocumentVersions(doc),
+                      ),
+                    // View button — downloads on first tap if needed, then opens full-screen
                     isDownloading
                         ? const SizedBox(
                             width: 24,
@@ -263,16 +484,9 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
                         : IconButton(
-                            icon: Icon(
-                              savedPath != null
-                                  ? Icons.check_circle
-                                  : Icons.download,
-                              color: savedPath != null ? Colors.green : null,
-                            ),
-                            tooltip: savedPath != null ? 'Saved' : 'Download',
-                            onPressed: savedPath != null
-                                ? null
-                                : () => _downloadDoc(doc.id),
+                            icon: const Icon(Icons.visibility_outlined),
+                            tooltip: 'View',
+                            onPressed: () => _viewDoc(doc.id),
                           ),
                   ],
                 ),
@@ -288,6 +502,7 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
 
   String _docTypeLabel(String type) => switch (type) {
         'INVOICE' => 'Tax Invoice',
+        'INVOICE_PAGE' => 'Tax Invoice',
         'GATE_ENTRY_NOTE' => 'Gate Entry / Discrepancy Note',
         'CREDIT_NOTE' => 'Credit Note',
         'GRN' => 'Goods Receipt Note',
@@ -309,11 +524,18 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
               value: disputeType,
               decoration: const InputDecoration(labelText: 'Dispute Type'),
               items: const [
-                DropdownMenuItem(value: 'SHORT_RECEIPT', child: Text('Short Receipt')),
-                DropdownMenuItem(value: 'CREDIT_NOTE_REQUESTED', child: Text('Credit Note Requested')),
-                DropdownMenuItem(value: 'ARITHMETIC_ERROR', child: Text('Arithmetic Error')),
-                DropdownMenuItem(value: 'MISSING_PAGE', child: Text('Missing Page')),
-                DropdownMenuItem(value: 'TAX_STRUCTURE_ERROR', child: Text('Tax Structure Error')),
+                DropdownMenuItem(
+                    value: 'SHORT_RECEIPT', child: Text('Short Receipt')),
+                DropdownMenuItem(
+                    value: 'CREDIT_NOTE_REQUESTED',
+                    child: Text('Credit Note Requested')),
+                DropdownMenuItem(
+                    value: 'ARITHMETIC_ERROR', child: Text('Arithmetic Error')),
+                DropdownMenuItem(
+                    value: 'MISSING_PAGE', child: Text('Missing Page')),
+                DropdownMenuItem(
+                    value: 'TAX_STRUCTURE_ERROR',
+                    child: Text('Tax Structure Error')),
                 DropdownMenuItem(value: 'OTHER', child: Text('Other')),
               ],
               onChanged: (v) => disputeType = v ?? 'OTHER',
@@ -378,7 +600,8 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
               children: [
                 TextField(
                   controller: _gateNumberController,
-                  decoration: const InputDecoration(labelText: 'Gate Entry Number'),
+                  decoration:
+                      const InputDecoration(labelText: 'Gate Entry Number'),
                 ),
                 const SizedBox(height: 8),
                 TextField(
@@ -459,6 +682,53 @@ class _DisputeCard extends StatefulWidget {
 
 class _DisputeCardState extends State<_DisputeCard> {
   bool _loading = false;
+  bool _uploadingCreditNote = false;
+
+  Future<void> _uploadCreditNote() async {
+    final picked = await showModalBottomSheet<XFile?>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.camera_alt),
+              title: const Text('Take photo'),
+              onTap: () async => Navigator.pop(ctx,
+                  await ImagePicker().pickImage(source: ImageSource.camera)),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library),
+              title: const Text('Choose from gallery'),
+              onTap: () async => Navigator.pop(ctx,
+                  await ImagePicker().pickImage(source: ImageSource.gallery)),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (picked == null) return;
+
+    setState(() => _uploadingCreditNote = true);
+    try {
+      await ownerService.uploadCreditNote(widget.dispute.id, File(picked.path));
+      widget.onUpdate();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Credit note uploaded.')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text('Upload failed: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _uploadingCreditNote = false);
+    }
+  }
 
   Color _statusColor() => switch (widget.dispute.status) {
         'OPEN' => Colors.red,
@@ -487,8 +757,7 @@ class _DisputeCardState extends State<_DisputeCard> {
   @override
   Widget build(BuildContext context) {
     final d = widget.dispute;
-    final isOpen =
-        d.status == 'OPEN' || d.status == 'OWNER_REVIEWING';
+    final isOpen = d.status == 'OPEN' || d.status == 'OWNER_REVIEWING';
 
     return Card(
       color: isOpen ? Colors.red[50] : null,
@@ -507,7 +776,8 @@ class _DisputeCardState extends State<_DisputeCard> {
                   ),
                 ),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(
                     color: _statusColor().withOpacity(0.15),
                     borderRadius: BorderRadius.circular(12),
@@ -533,10 +803,37 @@ class _DisputeCardState extends State<_DisputeCard> {
                   style: const TextStyle(
                       fontStyle: FontStyle.italic, fontSize: 12)),
             ],
+            if (d.disputeType == 'CREDIT_NOTE_REQUESTED') ...[
+              const SizedBox(height: 8),
+              if (d.creditNoteDocumentId != null)
+                const Row(
+                  children: [
+                    Icon(Icons.check_circle, size: 16, color: Colors.green),
+                    SizedBox(width: 4),
+                    Text('Credit note attached',
+                        style: TextStyle(fontSize: 12, color: Colors.green)),
+                  ],
+                )
+              else if (isOpen)
+                _uploadingCreditNote
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2))
+                    : OutlinedButton.icon(
+                        onPressed: _uploadCreditNote,
+                        icon: const Icon(Icons.upload_file, size: 18),
+                        label: const Text('Upload Credit Note'),
+                      ),
+            ],
             if (isOpen) ...[
               const SizedBox(height: 12),
               _loading
-                  ? const Center(child: SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2)))
+                  ? const Center(
+                      child: SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(strokeWidth: 2)))
                   : Row(
                       children: [
                         if (d.status == 'OPEN')
@@ -547,7 +844,8 @@ class _DisputeCardState extends State<_DisputeCard> {
                         const Spacer(),
                         OutlinedButton(
                           onPressed: () => _showResolveDialog(context, false),
-                          style: OutlinedButton.styleFrom(foregroundColor: Colors.grey),
+                          style: OutlinedButton.styleFrom(
+                              foregroundColor: Colors.grey),
                           child: const Text('Reject'),
                         ),
                         const SizedBox(width: 8),
@@ -597,7 +895,9 @@ class _DisputeCardState extends State<_DisputeCard> {
               } catch (e) {
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Failed: $e'), backgroundColor: Colors.red),
+                    SnackBar(
+                        content: Text('Failed: $e'),
+                        backgroundColor: Colors.red),
                   );
                 }
               } finally {
@@ -607,6 +907,89 @@ class _DisputeCardState extends State<_DisputeCard> {
             child: Text(resolve ? 'Resolve' : 'Reject'),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _AuditTrailScreen extends StatefulWidget {
+  final String invoiceId;
+  const _AuditTrailScreen({required this.invoiceId});
+
+  @override
+  State<_AuditTrailScreen> createState() => _AuditTrailScreenState();
+}
+
+class _AuditTrailScreenState extends State<_AuditTrailScreen> {
+  List<AuditEvent>? _events;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final events = await ownerService.getAuditTrail(widget.invoiceId);
+      if (mounted) setState(() => _events = events);
+    } catch (e) {
+      if (mounted) setState(() => _error = 'Failed to load audit trail: $e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Audit Trail')),
+      body: _error != null
+          ? Center(child: Text(_error!))
+          : _events == null
+              ? const Center(child: CircularProgressIndicator())
+              : _events!.isEmpty
+                  ? const Center(child: Text('No events recorded yet.'))
+                  : ListView.builder(
+                      padding: const EdgeInsets.all(16),
+                      itemCount: _events!.length,
+                      itemBuilder: (context, i) {
+                        final e = _events![i];
+                        return Card(
+                          margin: const EdgeInsets.only(bottom: 6),
+                          child: ListTile(
+                            leading: const Icon(Icons.circle, size: 10),
+                            title: Text(e.eventType.replaceAll('_', ' ')),
+                            subtitle: Text(
+                              '${e.description}\n${e.actorId}  •  ${e.createdAt.length >= 16 ? e.createdAt.substring(0, 16).replaceFirst('T', ' ') : e.createdAt}',
+                            ),
+                            isThreeLine: true,
+                          ),
+                        );
+                      },
+                    ),
+    );
+  }
+}
+
+class _DocumentViewerScreen extends StatelessWidget {
+  final String imagePath;
+  const _DocumentViewerScreen({required this.imagePath});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+        iconTheme: const IconThemeData(color: Colors.white),
+      ),
+      body: Center(
+        child: InteractiveViewer(
+          minScale: 0.5,
+          maxScale: 4,
+          child: Image.file(File(imagePath)),
+        ),
       ),
     );
   }
@@ -674,7 +1057,8 @@ class _StatusChip extends StatelessWidget {
       ),
       child: Text(
         status,
-        style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w600),
+        style:
+            TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w600),
       ),
     );
   }

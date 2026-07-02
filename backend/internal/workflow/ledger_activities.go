@@ -24,7 +24,15 @@ type DocumentHeaderExtraction struct {
 	// mismatch -- doing so would flag every single upload as wrong on any
 	// deployment without OCR credentials configured, which is worse than
 	// useless.
-	Simulated bool
+	Simulated    bool
+	Inconclusive bool
+}
+
+func (e DocumentHeaderExtraction) IsInconclusive() bool {
+	return e.Inconclusive ||
+		(strings.TrimSpace(e.InvoiceNumber) == "" &&
+			strings.TrimSpace(e.BuyerGSTIN) == "" &&
+			e.Amount == nil)
 }
 
 type MatchDocumentInput struct {
@@ -44,11 +52,15 @@ func MatchDocumentToInvoiceActivity(ctx context.Context, input MatchDocumentInpu
 		return fmt.Errorf("workflow.Repo not initialized")
 	}
 
-	if input.Extracted.Simulated {
+	if input.Extracted.Simulated || input.Extracted.IsInconclusive() {
 		_ = Repo.WriteAuditLog(ctx, input.TenantID, input.InvoiceID, "DOCUMENT_MATCH_SKIPPED", "system",
-			"No OCR backend configured; supporting document could not be automatically matched",
-			map[string]interface{}{"document_id": input.DocumentID})
-		return nil
+			"Supporting document OCR was unavailable or inconclusive; automatic matching was skipped",
+			map[string]interface{}{"document_id": input.DocumentID, "simulated": input.Extracted.Simulated})
+		details, _ := json.Marshal(map[string]interface{}{
+			"document_id": input.DocumentID,
+			"reasons":     []string{"supporting document OCR produced no matchable fields"},
+		})
+		return Repo.RaiseExceptionIfNotOpen(ctx, input.TenantID, input.InvoiceID, "ocr_inconclusive", details)
 	}
 
 	inv, err := Repo.GetInvoice(ctx, input.TenantID, input.InvoiceID)

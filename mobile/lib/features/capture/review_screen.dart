@@ -9,6 +9,62 @@ import '../../core/models/buyer_requirement.dart';
 import 'bundle_provider.dart';
 import 'camera_screen.dart'; // CameraTarget
 
+final reviewDioProvider = Provider<Dio>((ref) => buildDio());
+final ocrPreviewProvider = Provider<Future<InvoiceOCRPreview> Function(String)>(
+  (ref) {
+    final dio = ref.watch(reviewDioProvider);
+    return (path) => fetchInvoiceOCRPreview(dio, path);
+  },
+);
+
+const ocrFilledHelperText = 'Filled by OCR - verify';
+
+String? ocrFieldHelperText(Set<String> ocrFilledFields, String fieldKey) {
+  return ocrFilledFields.contains(fieldKey) ? ocrFilledHelperText : null;
+}
+
+class InvoiceOCRPreview {
+  final bool ocrAvailable;
+  final String? invoiceNumber;
+  final String? sellerGstin;
+  final String? buyerGstin;
+  final double? taxableAmount;
+  final double? grossAmount;
+
+  const InvoiceOCRPreview({
+    required this.ocrAvailable,
+    this.invoiceNumber,
+    this.sellerGstin,
+    this.buyerGstin,
+    this.taxableAmount,
+    this.grossAmount,
+  });
+
+  factory InvoiceOCRPreview.fromJson(Map<String, dynamic> json) =>
+      InvoiceOCRPreview(
+        ocrAvailable: json['ocr_available'] == true,
+        invoiceNumber: json['invoice_number'] as String?,
+        sellerGstin: json['seller_gstin'] as String?,
+        buyerGstin: json['buyer_gstin'] as String?,
+        taxableAmount: (json['taxable_amount'] as num?)?.toDouble(),
+        grossAmount: (json['gross_amount'] as num?)?.toDouble(),
+      );
+}
+
+Future<InvoiceOCRPreview> fetchInvoiceOCRPreview(Dio dio, String path) async {
+  final resp = await dio.post(
+    Endpoints.invoiceOcrPreview,
+    data: FormData.fromMap({
+      'file': await MultipartFile.fromFile(
+        path,
+        filename: 'invoice-preview.jpg',
+        contentType: DioMediaType('image', 'jpeg'),
+      ),
+    }),
+  );
+  return InvoiceOCRPreview.fromJson(resp.data as Map<String, dynamic>? ?? {});
+}
+
 class ReviewScreen extends ConsumerStatefulWidget {
   const ReviewScreen({super.key});
 
@@ -34,6 +90,138 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
   String _entityGstin = _entities.first.$2;
 
   bool _lookingUpBuyer = false;
+  bool _lookingUpOcr = false;
+  bool _ocrAttempted = false;
+  String? _ocrStatus;
+  String? _ocrWarning;
+  Set<String> _ocrFilledFields = {};
+  List<Buyer> _buyers = [];
+
+  @override
+  void initState() {
+    super.initState();
+    final today = DateTime.now();
+    _invDateCtrl.text =
+        '${today.year.toString().padLeft(4, '0')}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
+    _loadBuyers();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _runOCRPreviewIfPossible();
+    });
+  }
+
+  Future<void> _loadBuyers() async {
+    try {
+      final dio = ref.read(reviewDioProvider);
+      final resp = await dio.get(Endpoints.buyers);
+      final list = (resp.data['buyers'] as List? ?? [])
+          .map((b) => Buyer.fromJson(b as Map<String, dynamic>))
+          .toList();
+      if (mounted) setState(() => _buyers = list);
+    } catch (_) {
+      // Non-fatal: worker can still type the GSTIN manually below
+    }
+  }
+
+  void _selectBuyer(Buyer buyer) {
+    _buyerGstinCtrl.text = buyer.gstin;
+    _buyerNameCtrl.text = buyer.name;
+    _lookupBuyer();
+  }
+
+  Future<void> _runOCRPreviewIfPossible() async {
+    if (_ocrAttempted || !mounted) return;
+    final pagePaths = ref.read(bundleProvider).invoicePhotoPaths;
+    if (pagePaths.isEmpty) return;
+    _ocrAttempted = true;
+    if (!File(pagePaths.first).existsSync()) return;
+    setState(() {
+      _lookingUpOcr = true;
+      _ocrStatus = 'Reading invoice photo...';
+      _ocrWarning = null;
+      _ocrFilledFields = {};
+    });
+    try {
+      final data = await ref.read(ocrPreviewProvider)(pagePaths.first);
+      if (!data.ocrAvailable) {
+        if (mounted) {
+          setState(() {
+            _ocrStatus = null;
+            _ocrWarning = null;
+            _ocrFilledFields = {};
+          });
+        }
+        return;
+      }
+
+      final filled = <String>[];
+      final filledFields = <String>{};
+      void fillIfEmpty(
+        TextEditingController ctrl,
+        Object? value,
+        String fieldKey,
+        String label,
+      ) {
+        final text = value?.toString().trim() ?? '';
+        if (text.isEmpty || ctrl.text.trim().isNotEmpty) return;
+        ctrl.text = text;
+        filled.add(label);
+        filledFields.add(fieldKey);
+      }
+
+      fillIfEmpty(
+        _invNumCtrl,
+        data.invoiceNumber,
+        'invoice_number',
+        'invoice number',
+      );
+      final sellerGSTIN = data.sellerGstin?.trim();
+      if (sellerGSTIN != null && sellerGSTIN.isNotEmpty) {
+        final match = _entities.where((e) => e.$2 == sellerGSTIN).toList();
+        if (match.isNotEmpty) _entityGstin = match.first.$2;
+      }
+      final extractedBuyerGSTIN = data.buyerGstin?.trim();
+      final existingBuyerGSTIN = _buyerGstinCtrl.text.trim();
+      if (extractedBuyerGSTIN != null && extractedBuyerGSTIN.isNotEmpty) {
+        if (existingBuyerGSTIN.isEmpty) {
+          _buyerGstinCtrl.text = extractedBuyerGSTIN.toUpperCase();
+          filled.add('buyer GSTIN');
+          filledFields.add('buyer_gstin');
+          await _lookupBuyer();
+        } else if (existingBuyerGSTIN.toUpperCase() !=
+            extractedBuyerGSTIN.toUpperCase()) {
+          _ocrWarning = 'Buyer GSTIN from photo differs. Check the invoice.';
+        }
+      }
+      if (_taxableCtrl.text.trim().isEmpty && data.taxableAmount != null) {
+        _taxableCtrl.text = data.taxableAmount!.toStringAsFixed(2);
+        filled.add('taxable amount');
+        filledFields.add('taxable_amount');
+      }
+      if (_totalCtrl.text.trim().isEmpty && data.grossAmount != null) {
+        _totalCtrl.text = data.grossAmount!.toStringAsFixed(2);
+        filled.add('total amount');
+        filledFields.add('gross_amount');
+      }
+      if (mounted) {
+        setState(() {
+          _ocrStatus = filled.isEmpty
+              ? null
+              : 'OCR filled ${filled.join(', ')}. Verify before continuing.';
+          _ocrFilledFields = filledFields;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _ocrStatus = null;
+          _ocrWarning = null;
+          _ocrFilledFields = {};
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _lookingUpOcr = false);
+    }
+  }
 
   @override
   void dispose() {
@@ -51,9 +239,10 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
     if (gstin.length != 15) return;
     setState(() => _lookingUpBuyer = true);
     try {
-      final dio = buildDio();
+      final dio = ref.read(reviewDioProvider);
       final resp = await dio.get(Endpoints.buyerRequirementsByGstin(gstin));
-      final data = BuyerWithRequirements.fromJson(resp.data as Map<String, dynamic>);
+      final data =
+          BuyerWithRequirements.fromJson(resp.data as Map<String, dynamic>);
       if (data.buyer != null) {
         _buyerNameCtrl.text = data.buyer!['name'] as String? ?? '';
       }
@@ -67,10 +256,11 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
 
   void _proceed() {
     if (!_formKey.currentState!.validate()) return;
+    if (ref.read(bundleProvider).invoicePhotoPaths.isEmpty) return;
     ref.read(bundleProvider.notifier).updateInvoiceFields(
           invoiceNumber: _invNumCtrl.text.trim(),
           entityGstin: _entityGstin,
-          buyerGstin: _buyerGstinCtrl.text.trim(),
+          buyerGstin: _buyerGstinCtrl.text.trim().toUpperCase(),
           buyerName: _buyerNameCtrl.text.trim(),
           invoiceDate: _invDateCtrl.text.trim(),
           taxableAmount: double.tryParse(_taxableCtrl.text) ?? 0,
@@ -87,174 +277,391 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
     Widget? suffix,
     String? Function(String?)? validator,
     VoidCallback? onEditingComplete,
-  }) =>
-      TextFormField(
-        controller: ctrl,
-        decoration: InputDecoration(
-          labelText: label,
-          hintText: hint,
-          border: const OutlineInputBorder(),
-          suffixIcon: suffix,
+    String? ocrFieldKey,
+  }) {
+    final helperText = ocrFieldKey == null
+        ? null
+        : ocrFieldHelperText(_ocrFilledFields, ocrFieldKey);
+    return TextFormField(
+      controller: ctrl,
+      decoration: InputDecoration(
+        labelText: label,
+        hintText: hint,
+        border: const OutlineInputBorder(),
+        suffixIcon: suffix,
+        helperText: helperText,
+        helperStyle: TextStyle(
+          color: Colors.blueGrey.shade700,
+          fontWeight: FontWeight.w600,
         ),
-        keyboardType: keyboardType,
-        onEditingComplete: onEditingComplete,
-        validator: validator ?? (v) => (v == null || v.isEmpty) ? 'Required' : null,
-      );
+      ),
+      keyboardType: keyboardType,
+      onEditingComplete: onEditingComplete,
+      onChanged: (_) {
+        if (ocrFieldKey != null && _ocrFilledFields.contains(ocrFieldKey)) {
+          setState(() {
+            _ocrFilledFields = {..._ocrFilledFields}..remove(ocrFieldKey);
+          });
+        }
+      },
+      validator:
+          validator ?? (v) => (v == null || v.isEmpty) ? 'Required' : null,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     final session = ref.watch(bundleProvider);
-    final photoPath = session.invoicePhotoPath;
+    final pagePaths = session.invoicePhotoPaths;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Review Invoice'),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () => context.go('/capture/camera'),
-        ),
-      ),
-      body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(16),
-          child: Form(
-            key: _formKey,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Invoice photo thumbnail
-                if (photoPath != null)
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: Image.file(
-                      File(photoPath),
-                      width: double.infinity,
-                      height: 200,
-                      fit: BoxFit.cover,
-                    ),
-                  ),
-                const SizedBox(height: 4),
-                TextButton.icon(
-                  onPressed: () => context.go(
-                    '/capture/camera',
-                    extra: const CameraTarget(
-                      documentType: 'INVOICE',
-                      label: 'Tax Invoice',
-                      isPrimary: true,
-                    ),
-                  ),
-                  icon: const Icon(Icons.camera_alt, size: 18),
-                  label: const Text('Retake photo'),
-                ),
-                const SizedBox(height: 16),
-
-                // Seller entity
-                DropdownButtonFormField<String>(
-                  value: _entityGstin,
-                  decoration: const InputDecoration(
-                    labelText: 'Seller Entity',
-                    border: OutlineInputBorder(),
-                  ),
-                  items: _entities
-                      .map((e) => DropdownMenuItem(
-                            value: e.$2,
-                            child: Text(e.$1),
-                          ))
-                      .toList(),
-                  onChanged: (v) => setState(() => _entityGstin = v!),
-                ),
-                const SizedBox(height: 12),
-
-                _field(ctrl: _invNumCtrl, label: 'Invoice Number', hint: 'A26/001'),
-                const SizedBox(height: 12),
-
-                // Buyer GSTIN with auto-lookup
-                _field(
-                  ctrl: _buyerGstinCtrl,
-                  label: 'Buyer GSTIN',
-                  hint: '06AAAAA0013A1ZD',
-                  suffix: _lookingUpBuyer
-                      ? const Padding(
-                          padding: EdgeInsets.all(12),
-                          child: SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          ),
-                        )
-                      : IconButton(
-                          icon: const Icon(Icons.search),
-                          onPressed: _lookupBuyer,
-                          tooltip: 'Look up buyer',
-                        ),
-                  onEditingComplete: _lookupBuyer,
-                  validator: (v) {
-                    if (v == null || v.isEmpty) return 'Required';
-                    if (v.length != 15) return 'GSTIN must be 15 characters';
-                    return null;
-                  },
-                ),
-                const SizedBox(height: 12),
-
-                _field(ctrl: _buyerNameCtrl, label: 'Buyer Name', hint: 'Vishal Mega Mart'),
-                const SizedBox(height: 12),
-
-                _field(
-                  ctrl: _invDateCtrl,
-                  label: 'Invoice Date',
-                  hint: 'YYYY-MM-DD',
-                  validator: (v) {
-                    if (v == null || v.isEmpty) return 'Required';
-                    final re = RegExp(r'^\d{4}-\d{2}-\d{2}$');
-                    if (!re.hasMatch(v)) return 'Use YYYY-MM-DD format';
-                    return null;
-                  },
-                ),
-                const SizedBox(height: 12),
-
-                Row(
+    return BackButtonListener(
+      onBackButtonPressed: () async {
+        context.go('/capture/camera');
+        return true;
+      },
+      child: PopScope(
+        canPop: false,
+        onPopInvokedWithResult: (didPop, result) {
+          if (didPop) return;
+          context.go('/capture/camera');
+        },
+        child: Scaffold(
+          appBar: AppBar(
+            title: const Text('Review Invoice'),
+            leading: IconButton(
+              icon: const Icon(Icons.arrow_back),
+              onPressed: () => context.go('/capture/camera'),
+            ),
+          ),
+          body: SafeArea(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(16),
+              child: Form(
+                key: _formKey,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Expanded(
-                      child: _field(
-                        ctrl: _taxableCtrl,
-                        label: 'Taxable Amount (₹)',
-                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                        validator: (v) {
-                          if (v == null || v.isEmpty) return 'Required';
-                          if (double.tryParse(v) == null) return 'Must be a number';
-                          return null;
-                        },
+                    // Invoice photo pages — tap a page to retake it, "+" to add another
+                    Text(
+                      pagePaths.length > 1
+                          ? 'Invoice pages (${pagePaths.length})'
+                          : 'Invoice photo',
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      height: 120,
+                      child: ListView(
+                        scrollDirection: Axis.horizontal,
+                        children: [
+                          for (var i = 0; i < pagePaths.length; i++)
+                            Padding(
+                              padding: const EdgeInsets.only(right: 8),
+                              child: Stack(
+                                children: [
+                                  GestureDetector(
+                                    onTap: () => context.go(
+                                      '/capture/camera',
+                                      extra: CameraTarget(
+                                        documentType: 'INVOICE',
+                                        label: 'Tax Invoice (page ${i + 1})',
+                                        isPrimary: true,
+                                        replaceIndex: i,
+                                      ),
+                                    ),
+                                    child: ClipRRect(
+                                      borderRadius: BorderRadius.circular(8),
+                                      child: Image.file(
+                                        File(pagePaths[i]),
+                                        width: 90,
+                                        height: 120,
+                                        fit: BoxFit.cover,
+                                      ),
+                                    ),
+                                  ),
+                                  Positioned(
+                                    left: 4,
+                                    bottom: 4,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 6, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: Colors.black54,
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                      child: Text('Page ${i + 1}',
+                                          style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 11)),
+                                    ),
+                                  ),
+                                  if (pagePaths.length > 1)
+                                    Positioned(
+                                      right: 0,
+                                      top: 0,
+                                      child: GestureDetector(
+                                        onTap: () => ref
+                                            .read(bundleProvider.notifier)
+                                            .removeInvoicePage(i),
+                                        child: const CircleAvatar(
+                                          radius: 11,
+                                          backgroundColor: Colors.black54,
+                                          child: Icon(Icons.close,
+                                              size: 14, color: Colors.white),
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          // "Add page" tile — for invoices that span 2-3 pages
+                          GestureDetector(
+                            onTap: () => context.go(
+                              '/capture/camera',
+                              extra: const CameraTarget(
+                                documentType: 'INVOICE',
+                                label: 'Tax Invoice',
+                                isPrimary: true,
+                              ),
+                            ),
+                            child: Container(
+                              width: 90,
+                              height: 120,
+                              decoration: BoxDecoration(
+                                border: Border.all(color: Colors.grey[400]!),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: const Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(Icons.add_a_photo, color: Colors.grey),
+                                  SizedBox(height: 4),
+                                  Text('Add page',
+                                      style: TextStyle(
+                                          fontSize: 12, color: Colors.grey)),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: _field(
-                        ctrl: _totalCtrl,
-                        label: 'Total Amount (₹)',
-                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                        validator: (v) {
-                          if (v == null || v.isEmpty) return 'Required';
-                          if (double.tryParse(v) == null) return 'Must be a number';
-                          return null;
-                        },
+                    const SizedBox(height: 16),
+                    if (_lookingUpOcr ||
+                        _ocrStatus != null ||
+                        _ocrWarning != null) ...[
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: _ocrWarning != null
+                              ? Colors.orange.withValues(alpha: 0.10)
+                              : Colors.blue.withValues(alpha: 0.08),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color: _ocrWarning != null
+                                ? Colors.orange
+                                : Colors.blueGrey.shade100,
+                          ),
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            if (_lookingUpOcr)
+                              const SizedBox(
+                                height: 18,
+                                width: 18,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            else
+                              Icon(
+                                _ocrWarning != null
+                                    ? Icons.warning_amber
+                                    : Icons.document_scanner_outlined,
+                                size: 20,
+                                color: _ocrWarning != null
+                                    ? Colors.orange
+                                    : Colors.blueGrey,
+                              ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                _ocrWarning ?? _ocrStatus ?? '',
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+
+                    // Seller entity
+                    DropdownButtonFormField<String>(
+                      value: _entityGstin,
+                      decoration: const InputDecoration(
+                        labelText: 'Seller Entity',
+                        border: OutlineInputBorder(),
+                      ),
+                      items: _entities
+                          .map((e) => DropdownMenuItem(
+                                value: e.$2,
+                                child: Text(e.$1),
+                              ))
+                          .toList(),
+                      onChanged: (v) => setState(() => _entityGstin = v!),
+                    ),
+                    const SizedBox(height: 12),
+
+                    _field(
+                      ctrl: _invNumCtrl,
+                      label: 'Invoice Number',
+                      hint: 'A26/001',
+                      ocrFieldKey: 'invoice_number',
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Search buyer by name — picks from the known buyer list and
+                    // auto-fills GSTIN + name below (which stay editable as a fallback
+                    // for a buyer not yet in the system).
+                    Autocomplete<Buyer>(
+                      optionsBuilder: (textEditingValue) {
+                        final q = textEditingValue.text.toLowerCase();
+                        if (q.isEmpty) return _buyers;
+                        return _buyers.where((b) =>
+                            b.name.toLowerCase().contains(q) ||
+                            b.gstin.toLowerCase().contains(q));
+                      },
+                      displayStringForOption: (b) => b.name,
+                      onSelected: _selectBuyer,
+                      fieldViewBuilder:
+                          (context, controller, focusNode, onSubmitted) =>
+                              TextFormField(
+                        controller: controller,
+                        focusNode: focusNode,
+                        decoration: const InputDecoration(
+                          labelText: 'Search Buyer',
+                          hintText: 'Start typing buyer name…',
+                          prefixIcon: Icon(Icons.search),
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Buyer GSTIN with auto-lookup
+                    _field(
+                      ctrl: _buyerGstinCtrl,
+                      label: 'Buyer GSTIN',
+                      hint: '06AAAAA0013A1ZD',
+                      suffix: _lookingUpBuyer
+                          ? const Padding(
+                              padding: EdgeInsets.all(12),
+                              child: SizedBox(
+                                width: 20,
+                                height: 20,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2),
+                              ),
+                            )
+                          : IconButton(
+                              icon: const Icon(Icons.search),
+                              onPressed: _lookupBuyer,
+                              tooltip: 'Look up buyer',
+                            ),
+                      onEditingComplete: _lookupBuyer,
+                      ocrFieldKey: 'buyer_gstin',
+                      validator: (v) {
+                        final value = (v ?? '').trim().toUpperCase();
+                        if (value.isEmpty) return 'Required';
+                        if (value.length != 15) {
+                          return 'GSTIN must be 15 characters';
+                        }
+                        return null;
+                      },
+                    ),
+                    const SizedBox(height: 12),
+
+                    _field(
+                        ctrl: _buyerNameCtrl,
+                        label: 'Buyer Name',
+                        hint: 'Vishal Mega Mart'),
+                    const SizedBox(height: 12),
+
+                    _field(
+                      ctrl: _invDateCtrl,
+                      label: 'Invoice Date',
+                      hint: 'YYYY-MM-DD',
+                      validator: (v) {
+                        if (v == null || v.isEmpty) return 'Required';
+                        final re = RegExp(r'^\d{4}-\d{2}-\d{2}$');
+                        if (!re.hasMatch(v)) return 'Use YYYY-MM-DD format';
+                        return null;
+                      },
+                    ),
+                    const SizedBox(height: 12),
+
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _field(
+                            ctrl: _taxableCtrl,
+                            label: 'Taxable Amount (₹)',
+                            keyboardType: const TextInputType.numberWithOptions(
+                                decimal: true),
+                            ocrFieldKey: 'taxable_amount',
+                            validator: (v) {
+                              if (v == null || v.isEmpty) return 'Required';
+                              final taxable = double.tryParse(v);
+                              if (taxable == null) return 'Must be a number';
+                              final total = double.tryParse(_totalCtrl.text);
+                              if (total != null && total < taxable) {
+                                return 'Cannot exceed total';
+                              }
+                              return null;
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: _field(
+                            ctrl: _totalCtrl,
+                            label: 'Total Amount (₹)',
+                            keyboardType: const TextInputType.numberWithOptions(
+                                decimal: true),
+                            ocrFieldKey: 'gross_amount',
+                            validator: (v) {
+                              if (v == null || v.isEmpty) return 'Required';
+                              final total = double.tryParse(v);
+                              if (total == null) return 'Must be a number';
+                              final taxable =
+                                  double.tryParse(_taxableCtrl.text);
+                              if (taxable != null && total < taxable) {
+                                return 'Must be at least taxable';
+                              }
+                              return null;
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 24),
+
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        onPressed: _proceed,
+                        icon: const Icon(Icons.arrow_forward),
+                        label: const Text('Next — Supporting Docs'),
+                        style: FilledButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                        ),
                       ),
                     ),
                   ],
                 ),
-                const SizedBox(height: 24),
-
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.icon(
-                    onPressed: _proceed,
-                    icon: const Icon(Icons.arrow_forward),
-                    label: const Text('Next — Supporting Docs'),
-                    style: FilledButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                    ),
-                  ),
-                ),
-              ],
+              ),
             ),
           ),
         ),

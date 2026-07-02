@@ -1,3 +1,11 @@
 {$PUBLIC_DOMAIN} {
-	reverse_proxy api:8000
+	# Lets the pilot download the latest APK from a stable URL instead of
+	# needing the file re-shared by hand after every rebuild.
+	handle /downloads/* {
+		root * /srv/downloads
+		file_server
+	}
+	handle {
+		reverse_proxy api:8000
+	}
 }

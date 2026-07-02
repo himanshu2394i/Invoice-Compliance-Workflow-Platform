@@ -1,3 +1,17 @@
+class Buyer {
+  final String id;
+  final String name;
+  final String gstin;
+
+  const Buyer({required this.id, required this.name, required this.gstin});
+
+  factory Buyer.fromJson(Map<String, dynamic> json) => Buyer(
+        id: json['id'] as String,
+        name: json['name'] as String? ?? '',
+        gstin: json['gstin'] as String? ?? '',
+      );
+}
+
 class BuyerRequirement {
   final String id;
   final String buyerId;

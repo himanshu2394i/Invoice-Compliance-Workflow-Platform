@@ -1,4 +1,9 @@
-# Task List - MVP Invoice Compliance & Workflow SaaS
+# Task List — Meridian Invoice Capture (Pilot)
+
+Status as of 2026-06-29. Updated as work progresses — check this file for the
+current state before starting new work. Mirrors the in-session task tracker.
+
+## Phase 1 — Original MVP build (done)
 
 - `[x]` Step 1: Infrastructure Setup (Docker Compose)
 - `[x]` Step 2: Go Backend Initialization & Database Schema
@@ -6,3 +11,125 @@
 - `[x]` Step 4: Temporal Workflows & Activities
 - `[x]` Step 5: Next.js Frontend Ingestion & Dashboard UI
 - `[x]` Step 6: System Verification & Integration Testing
+
+## Phase 2 — Code review fixes (`feat/mobile-capture-app` branch, done)
+
+- `[x]` Fix CI lint policy to use a warning/info baseline instead of blanket suppression
+- `[x]` Add automated tests for owner dashboard, gate-entry form, dispute, and review screens
+- `[x]` Make CI worker liveness check sustained, not single-probe
+- `[x]` Validate DisputeType against DB CHECK constraint before insert
+- `[x]` Fix gofmt spacing nit in owner_handlers.go
+
+## Phase 3 — AWS pilot deployment (done)
+
+Live at `https://203-0-113-10.sslip.io` (EC2 t3.small, ap-south-1, account
+separate from `terraform-deploy`). Postgres/Temporal/OCR-worker/API/Caddy all
+running via `deploy/docker-compose.prod.yml`. Real org seeded (Meridian
+Brothers / Meridian Distributors / Meridian Gurgaon); worker + admin pilot
+passwords rotated off the shared demo default.
+
+- `[x]` Install Docker + Docker Compose on the pilot EC2 instance
+- `[x]` Ship backend code + production docker-compose to the server
+- `[x]` Run migrations and seed real Meridian org/entity/user data
+- `[x]` Build and sideload a release APK pointed at the live server
+- `[ ]` End-to-end smoke test on a real device against the live server — **in progress, blocked on feedback from device testing**
+
+## Phase 4 — Mobile/backend feature parity buildout (in progress)
+
+Full release build verified green 2026-06-30 after all items below (worked
+around a Windows Gradle/Kotlin incremental-compiler file-lock bug introduced
+by the new `image_picker` dependency — see `kotlin.incremental=false` in
+`mobile/android/gradle.properties`). Latest APK built at
+`mobile/build/app/outputs/flutter-apk/app-release.apk`. Not yet re-sideloaded
+to a device.
+
+Triggered by gaps found during the smoke test: backend has more capability
+than the mobile app exposes, and several rough edges in the capture flow.
+
+- `[x]` Add in-app document viewer for owner dashboard (was download-only)
+- `[x]` Support multi-page capture for the primary invoice (was capped at 1 page)
+- `[x]` Add buyer GSTIN/name autocomplete (searchable dropdown over the fixed buyer list)
+- `[x]` Add mobile UI to manage buyer document requirements (`/admin/buyer-requirements`)
+- `[x]` Add worker visibility into invoice status post-sync (`/my-invoices`)
+- `[x]` Split reviewer role from owner + add exception alerts
+- `[x]` Add exception resolution UI (resolve / not-applicable buttons)
+- `[x]` Add invoice approval workflow UI (approve/reject, role-gated)
+- `[x]` Add credit note upload UI for disputes (camera or gallery via `image_picker`)
+- `[x]` Add audit trail viewing UI (`/owner/invoices/:id` → history icon)
+- `[x]` Add matching rules management UI (`/admin/rules`, route + nav wired, `flutter analyze` clean against updated baseline)
+- `[x]` Enable real OCR (AWS Textract) in the ocr-worker — boto3 installed, ocr-worker authenticates via
+  EC2 instance role `meridian-ocr-worker-role` (no static AWS keys anywhere). Verified end-to-end: credentials
+  resolve and Textract's `AnalyzeExpense` API is reachable. Runs as backend-side post-hoc validation only —
+  does not yet pre-fill the mobile review screen (see next item).
+- `[x]` Wire OCR extraction into the live mobile capture flow — added short-timeout OCR preview before review form
+  autofill. It stores a temporary preview image only, creates no draft invoice/document rows, fills only empty fields,
+  and falls back to manual entry if OCR fails or times out.
+
+## Phase 5 — Bug fixes + real data cleanup (2026-06-29/30)
+
+- `[x]` Fix session-restore race condition: app logged users out on every reopen. Root cause:
+  `main()` called `runApp()` before the saved token was read, so GoRouter's first redirect always saw
+  "not logged in." Fixed by awaiting `loadInitialAuthState()` (decodes the saved JWT) before `runApp` and
+  seeding `authProvider`'s initial state via override — see `lib/main.dart`, `lib/features/auth/auth_provider.dart`,
+  `lib/core/api/api_client.dart` (`decodeJwtPayload`).
+- `[x]` Simplify pilot login credentials to `himanshu{worker,manager,admin,finance}@gmail.com`, all
+  password `Pilot@2026` (shared for now since it's solo testing — rotate before handing devices to real staff).
+- `[x]` Verified approval rules work end-to-end: live CRUD round-trip via API, and confirmed
+  `workflows.go` actually reads tenant rules and drives manager/finance approval routing from them
+  (not dead code). Note: backend DSL also defines `AUTO_APPROVE`/`AUTO_REJECT` actions, but
+  `workflows.go` doesn't act on them yet — mobile UI correctly only exposes the two actions that work.
+- `[x]` Populated real buyer data from `dataset_registry.md`/`invoice_extraction.md` (actual invoice
+  history) — went from 4 buyers to 20, each with real GSTIN. Added `GATE_ENTRY_NOTE` requirement for
+  Zepto and V-Mart Retail Limited (strong repeated evidence of a separate gate-entry document in the
+  historical data, same pattern as the already-configured Airplaza requirement).
+- `[x]` Configured receipt-proof requirements from the extractor for organized/e-commerce buyers: Flipkart
+  `GRN_SEAL`, Max Hypermarket `SECURITY_INWARD_STAMP`, Innovative Retail Concepts `STOCK_RECEIVING_ACK`,
+  plus normalized Airplaza/Vishal, Zepto, and V-Mart receiving-note labels through migration upserts.
+- Prepared but **not deployed**: a public `/downloads/` static-file route on Caddy to self-host the latest
+  APK (`deploy/Caddyfile`, `deploy/docker-compose.prod.yml`) — user said leave it for now, keep sharing
+  the APK file directly instead.
+
+## Phase 7 — Exception/dispute alerts (2026-06-30)
+
+- `[x]` Built task #16: reviewer role split plus alert feed. New
+  `GET /api/v1/owner/alerts` backend endpoint (`internal/db/db.go`'s `GetOpenAlerts`,
+  `internal/api/owner_handlers.go`'s `handleGetAlerts`) unions open exceptions + open disputes into one
+  feed. Mobile: bell icon with a live badge count in the home screen app bar (visible to ADMIN/MANAGER/FINANCE/REVIEWER,
+  polled on every home-screen build) → new `/alerts` screen (`lib/features/owner/alerts_screen.dart`) listing
+  each item, tap-through to the invoice. In-app only, no push/SMS/email — those would need separate
+  infra (Firebase/SES) that wasn't asked for.
+- Verified live: endpoint returns `{"alerts":[],"count":0}` correctly against the current (empty)
+  exceptions/disputes tables.
+
+## Phase 6 — Review fix pass (in progress, 2026-06-30)
+
+- `[x]` Fix OCR validation trust boundaries: distinguish real vs simulated/inconclusive extraction and reconcile OCR
+  output against the invoice the worker submitted.
+- `[x]` Fix supporting-document matching so empty real OCR output does not get logged as a clean match.
+- `[x]` Fix multi-page invoice upload so all captured invoice pages reach the backend intentionally.
+- `[x]` Fix gate-entry document ownership validation and mobile role/navigation gaps, including FINANCE dashboard access
+  and Android back behavior in the capture flow.
+- `[x]` Review alert routing and worker input workflow: route OCR/validation problems into open invoice exceptions,
+  default invoice date, improve buyer autocomplete, normalize GSTIN input, and reject impossible amount totals.
+- `[x]` Wire OCR extraction into live mobile autofill via a temporary OCR preview endpoint and review-screen autofill.
+- `[x]` Change corrected supporting-document uploads to immutable document-version appends; workers can add the first
+  required supporting proof, but replacing an existing document type is manager/admin-only. Manager/admin can view
+  document version history.
+
+### Known gaps not yet on this list
+
+- No password-change/reset endpoint exists anywhere in the backend.
+- No delete endpoint for buyer document requirements (upsert-only).
+
+## Phase 8 — Navigation, search, and product hardening roadmap (2026-07-01)
+
+- `[x]` Add app-wide Android back handling and visible back buttons across mobile screens.
+- `[x]` Add admin/manager invoice search by invoice number, buyer, GSTIN, amount, and status.
+- `[x]` Add OCR review cues on autofilled worker fields. Numeric confidence display waits on backend confidence values.
+- `[ ]` Add photo quality checks for blur, darkness, and missing document edges.
+- `[ ]` Add duplicate-invoice warning before submit.
+- `[ ]` Add capture draft recovery.
+- `[ ]` Add alert filters and aging for exceptions/disputes/approval work.
+- `[ ]` Add password-change/reset support before real staff rollout.
+- `[ ]` Add MFA for admin/manager users before broader pilot use.
+- `[ ]` Define DPDP/CERT-In operating checklist while keeping data indefinitely for now.

@@ -7,7 +7,12 @@ class Endpoints {
   static String get entities => '$_base/api/v1/entities';
   static String get buyers => '$_base/api/v1/buyers';
   static String get ledgerUpload => '$_base/api/v1/invoices/ledger-upload';
+  static String get invoiceOcrPreview =>
+      '$_base/api/v1/mobile/invoice-ocr-preview';
+  static String get invoices => '$_base/api/v1/invoices';
+  static String invoice(String id) => '$_base/api/v1/invoices/$id';
   static String get ownerDashboard => '$_base/api/v1/owner/dashboard';
+  static String get ownerAlerts => '$_base/api/v1/owner/alerts';
   static String get ownerInvoices => '$_base/api/v1/owner/invoices';
   static String get disputes => '$_base/api/v1/disputes';
 
@@ -19,6 +24,9 @@ class Endpoints {
 
   static String invoiceDocuments(String invoiceId) =>
       '$_base/api/v1/invoices/$invoiceId/documents';
+
+  static String documentVersions(String documentId) =>
+      '$_base/api/v1/documents/$documentId/versions';
 
   static String ownerInvoice(String id) => '$_base/api/v1/owner/invoices/$id';
 
@@ -32,4 +40,16 @@ class Endpoints {
 
   static String invoiceGateEntry(String invoiceId) =>
       '$_base/api/v1/invoices/$invoiceId/gate-entry';
+
+  static String exceptionResolve(String id) =>
+      '$_base/api/v1/exceptions/$id/resolve';
+
+  static String invoiceApprove(String invoiceId) =>
+      '$_base/api/v1/invoices/$invoiceId/approve';
+
+  static String invoiceAuditTrail(String invoiceId) =>
+      '$_base/api/v1/invoices/$invoiceId/audit-trail';
+
+  static String get rules => '$_base/api/v1/rules';
+  static String rule(String id) => '$_base/api/v1/rules/$id';
 }

@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/himanshu2394i/invoice-saas/internal/db"
@@ -32,6 +33,51 @@ func ExtractInvoiceDataActivity(ctx context.Context, s3URI string) (*validation.
 func ValidateInvoiceActivity(ctx context.Context, data validation.InvoiceData) (*validation.ValidationResult, error) {
 	result := validation.Validate(data)
 	return &result, nil
+}
+
+func ValidateInvoiceAgainstRecordActivity(ctx context.Context, tenantID, invoiceID string, data validation.InvoiceData) (*validation.ValidationResult, error) {
+	if Repo == nil {
+		return nil, fmt.Errorf("workflow.Repo not initialized")
+	}
+	inv, err := Repo.GetInvoice(ctx, tenantID, invoiceID)
+	if err != nil {
+		return nil, err
+	}
+	entity, err := Repo.GetEntityByID(ctx, tenantID, inv.EntityID)
+	if err != nil {
+		return nil, err
+	}
+	expected := validation.ExpectedInvoice{
+		InvoiceNumber: inv.InvoiceNumber,
+		SellerGSTIN:   entity.TaxIdentifier,
+		GrossAmount:   inv.GrossAmount,
+		TaxAmount:     inv.TaxAmount,
+	}
+	if inv.BuyerID != nil {
+		if buyer, berr := Repo.GetBuyerByID(ctx, tenantID, *inv.BuyerID); berr == nil {
+			expected.BuyerGSTIN = buyer.GSTIN
+		}
+	}
+
+	result := validation.ValidateAgainstExpected(data, expected)
+	return &result, nil
+}
+
+func RaiseValidationExceptionActivity(ctx context.Context, tenantID, invoiceID string, result validation.ValidationResult) error {
+	if Repo == nil {
+		return fmt.Errorf("workflow.Repo not initialized")
+	}
+	exceptionType := "validation_failed"
+	if result.HasCode("ocr_inconclusive") {
+		exceptionType = "ocr_inconclusive"
+	} else if result.HasCode("invoice_data_mismatch") {
+		exceptionType = "invoice_data_mismatch"
+	}
+	details, _ := json.Marshal(map[string]interface{}{
+		"errors": result.Errors,
+		"codes":  result.Codes,
+	})
+	return Repo.RaiseExceptionIfNotOpen(ctx, tenantID, invoiceID, exceptionType, details)
 }
 
 // UpdateInvoiceStateActivity persists the invoice's current lifecycle state so the

@@ -5,16 +5,15 @@ import 'package:go_router/go_router.dart';
 import 'package:invoice_capture/features/capture/bundle_provider.dart';
 import 'package:invoice_capture/features/capture/review_screen.dart';
 
-// Field order as laid out in ReviewScreen.build: Invoice Number, Buyer
-// GSTIN, Buyer Name, Invoice Date, Taxable Amount, Total Amount (the seller
-// entity selector is a DropdownButtonFormField, not a TextFormField, so it
-// doesn't shift these indices).
+// Field order as laid out in ReviewScreen.build: Invoice Number, Search Buyer,
+// Buyer GSTIN, Buyer Name, Invoice Date, Taxable Amount, Total Amount (the
+// seller entity selector is a DropdownButtonFormField, not a TextFormField).
 const _invoiceNumberField = 0;
-const _buyerGstinField = 1;
-const _buyerNameField = 2;
-const _invoiceDateField = 3;
-const _taxableAmountField = 4;
-const _totalAmountField = 5;
+const _buyerGstinField = 2;
+const _buyerNameField = 3;
+const _invoiceDateField = 4;
+const _taxableAmountField = 5;
+const _totalAmountField = 6;
 
 GoRouter _buildRouter() => GoRouter(
       initialLocation: '/capture/review',
@@ -44,17 +43,54 @@ Future<void> _fillValidForm(WidgetTester tester) async {
   await tester.enterText(fields.at(_totalAmountField), '10913.00');
 }
 
+ProviderContainer _containerWithInvoicePhoto({
+  String path = '/tmp/invoice.jpg',
+  List<Override> overrides = const [],
+}) {
+  final container = ProviderContainer(overrides: overrides);
+  container.read(bundleProvider.notifier).addInvoicePage(path);
+  return container;
+}
+
+Future<ProviderContainer> _pumpReview(WidgetTester tester,
+    {GoRouter? router,
+    String? invoicePath,
+    List<Override> overrides = const [],
+    bool settle = true}) async {
+  final container = _containerWithInvoicePhoto(
+    path: invoicePath ?? '/tmp/invoice.jpg',
+    overrides: overrides,
+  );
+  addTearDown(container.dispose);
+  await tester.pumpWidget(
+    UncontrolledProviderScope(
+      container: container,
+      child: MaterialApp.router(routerConfig: router ?? _buildRouter()),
+    ),
+  );
+  if (settle) {
+    await tester.pumpAndSettle();
+  } else {
+    await tester.pump();
+  }
+  return container;
+}
+
+Future<void> _tapNext(WidgetTester tester) async {
+  final next = find.text('Next — Supporting Docs');
+  await tester.ensureVisible(next);
+  await tester.pumpAndSettle();
+  await tester.tap(next);
+  await tester.pumpAndSettle();
+}
+
 void main() {
   testWidgets(
       'blocks submission and shows "Required" errors when fields are empty',
       (tester) async {
-    await tester.pumpWidget(
-      ProviderScope(child: MaterialApp.router(routerConfig: _buildRouter())),
-    );
-    await tester.pumpAndSettle();
+    await _pumpReview(tester);
 
-    await tester.tap(find.text('Next — Supporting Docs'));
-    await tester.pumpAndSettle();
+    await _tapNext(tester);
 
     expect(find.text('Required'), findsWidgets);
     expect(find.text('Checklist'), findsNothing);
@@ -62,74 +98,79 @@ void main() {
 
   testWidgets('rejects a buyer GSTIN that is not 15 characters',
       (tester) async {
-    await tester.pumpWidget(
-      ProviderScope(child: MaterialApp.router(routerConfig: _buildRouter())),
-    );
-    await tester.pumpAndSettle();
+    await _pumpReview(tester);
 
     await _fillValidForm(tester);
-    await tester.enterText(
-        find.byType(TextFormField).at(_buyerGstinField), '06AAICA76'); // 9 chars
+    await tester.enterText(find.byType(TextFormField).at(_buyerGstinField),
+        '06AAICA76'); // 9 chars
 
-    await tester.tap(find.text('Next — Supporting Docs'));
-    await tester.pumpAndSettle();
+    await _tapNext(tester);
 
     expect(find.text('GSTIN must be 15 characters'), findsOneWidget);
     expect(find.text('Checklist'), findsNothing);
   });
 
+  testWidgets('back from review returns to camera instead of exiting',
+      (tester) async {
+    final router = _buildRouter();
+    await _pumpReview(tester, router: router);
+
+    await tester.tap(find.byIcon(Icons.arrow_back));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Camera'), findsOneWidget);
+  });
+
   testWidgets('rejects an invoice date not in YYYY-MM-DD format',
       (tester) async {
-    await tester.pumpWidget(
-      ProviderScope(child: MaterialApp.router(routerConfig: _buildRouter())),
-    );
-    await tester.pumpAndSettle();
+    await _pumpReview(tester);
 
     await _fillValidForm(tester);
     await tester.enterText(
         find.byType(TextFormField).at(_invoiceDateField), '09-06-2026');
 
-    await tester.tap(find.text('Next — Supporting Docs'));
-    await tester.pumpAndSettle();
+    await _tapNext(tester);
 
     expect(find.text('Use YYYY-MM-DD format'), findsOneWidget);
     expect(find.text('Checklist'), findsNothing);
   });
 
   testWidgets('rejects a non-numeric taxable amount', (tester) async {
-    await tester.pumpWidget(
-      ProviderScope(child: MaterialApp.router(routerConfig: _buildRouter())),
-    );
-    await tester.pumpAndSettle();
+    await _pumpReview(tester);
 
     await _fillValidForm(tester);
     await tester.enterText(
         find.byType(TextFormField).at(_taxableAmountField), 'not-a-number');
 
-    await tester.tap(find.text('Next — Supporting Docs'));
-    await tester.pumpAndSettle();
+    await _tapNext(tester);
 
     expect(find.text('Must be a number'), findsOneWidget);
+    expect(find.text('Checklist'), findsNothing);
+  });
+
+  testWidgets('rejects total amount lower than taxable amount', (tester) async {
+    await _pumpReview(tester);
+
+    await _fillValidForm(tester);
+    await tester.enterText(
+        find.byType(TextFormField).at(_taxableAmountField), '200');
+    await tester.enterText(
+        find.byType(TextFormField).at(_totalAmountField), '100');
+
+    await _tapNext(tester);
+
+    expect(find.text('Cannot exceed total'), findsOneWidget);
+    expect(find.text('Must be at least taxable'), findsOneWidget);
     expect(find.text('Checklist'), findsNothing);
   });
 
   testWidgets(
       'valid input saves the parsed fields to bundleProvider and advances to the checklist',
       (tester) async {
-    final container = ProviderContainer();
-    addTearDown(container.dispose);
-
-    await tester.pumpWidget(
-      UncontrolledProviderScope(
-        container: container,
-        child: MaterialApp.router(routerConfig: _buildRouter()),
-      ),
-    );
-    await tester.pumpAndSettle();
+    final container = await _pumpReview(tester);
 
     await _fillValidForm(tester);
-    await tester.tap(find.text('Next — Supporting Docs'));
-    await tester.pumpAndSettle();
+    await _tapNext(tester);
 
     final session = container.read(bundleProvider);
     expect(session.invoiceNumber, 'A26/001');

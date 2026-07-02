@@ -109,6 +109,43 @@ func TestInvoiceLifecycle_LedgerUploadThroughApproval(t *testing.T) {
 	}
 }
 
+func TestLedgerUpload_StoresTotalAsGrossAndTaxDelta(t *testing.T) {
+	ts := startTestServer(t)
+
+	resp := ts.uploadMultipart(t, "/api/v1/invoices/ledger-upload", ts.WorkerToken,
+		map[string]string{
+			"invoice_number": "A260000218-AMOUNT-TEST",
+			"entity_gstin":   "06AAAAA0003A1Z3",
+			"buyer_gstin":    "06AAAAA0013A1ZD",
+			"buyer_name":     "Airplaza Retail Holdings Pvt Ltd (Vishal Mega Mart)",
+			"invoice_date":   "2026-06-09",
+			"taxable_amount": "10393.45",
+			"total_amount":   "10913.00",
+		},
+		"file", "amount-test.jpg", minimalJPEG(t))
+	type uploadResp struct {
+		Invoice struct {
+			ID string `json:"id"`
+		} `json:"invoice"`
+	}
+	invoiceID := decodeJSON[uploadResp](t, resp).Invoice.ID
+
+	detailResp := ts.get(t, "/api/v1/invoices/"+invoiceID, ts.WorkerToken)
+	type invoiceResp struct {
+		Invoice struct {
+			GrossAmount float64 `json:"gross_amount"`
+			TaxAmount   float64 `json:"tax_amount"`
+		} `json:"invoice"`
+	}
+	inv := decodeJSON[invoiceResp](t, detailResp).Invoice
+	if inv.GrossAmount != 10913.00 {
+		t.Fatalf("gross_amount should store the submitted total amount, got %.2f", inv.GrossAmount)
+	}
+	if inv.TaxAmount != 519.55 {
+		t.Fatalf("tax_amount should store total-taxable, got %.2f", inv.TaxAmount)
+	}
+}
+
 // TestInvoiceLifecycle_RejectionStopsTheWorkflow proves "Reject" actually
 // rejects (this exact bug -- role-generic signals letting Reject silently
 // approve -- was fixed in a previous session; this test guards the fix).
