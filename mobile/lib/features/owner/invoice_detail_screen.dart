@@ -287,7 +287,7 @@ class _InvoiceDetailScreenState extends ConsumerState<InvoiceDetailScreen> {
                           style: const TextStyle(
                               fontSize: 18, fontWeight: FontWeight.bold)),
                     ),
-                    _StatusChip(inv.currentState),
+                    _StatusChip(inv.currentState, label: inv.statusLabel),
                   ],
                 ),
                 const SizedBox(height: 8),
@@ -1056,7 +1056,8 @@ class _InfoRow extends StatelessWidget {
 
 class _StatusChip extends StatelessWidget {
   final String status;
-  const _StatusChip(this.status);
+  final String label;
+  const _StatusChip(this.status, {String? label}) : label = label ?? status;
 
   @override
   Widget build(BuildContext context) {
@@ -1074,7 +1075,7 @@ class _StatusChip extends StatelessWidget {
         border: Border.all(color: color),
       ),
       child: Text(
-        status,
+        label,
         style:
             TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w600),
       ),

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"testing"
+	"time"
 )
 
 func TestDuplicateInvoiceCheck(t *testing.T) {
@@ -197,4 +198,168 @@ func TestOwnerInvoiceFilters(t *testing.T) {
 		t.Fatal("buyer A not found in buyers list")
 	}
 	only(fetch("buyer_id="+buyerAID), invoiceA, "buyer_id")
+}
+
+func TestAlertFilters(t *testing.T) {
+	ts := startTestServer(t)
+	n := testInvoiceCounter.Add(1)
+
+	// A fresh dispute (age 0, priority warning).
+	disputedInvoice := uploadFilterTestInvoice(t, ts,
+		fmt.Sprintf("ALRT-DISP-%d", n), "06AAAAA0013A1ZD", "Vishal Mega Mart", "2026-06-01")
+	dispResp := ts.post(t, "/api/v1/disputes", ts.WorkerToken, map[string]interface{}{
+		"invoice_id":   disputedInvoice,
+		"dispute_type": "OTHER",
+		"description":  "alert filter test dispute",
+	})
+	dispResp.Body.Close()
+
+	// A credit invoice due 40 days ago (age 40, priority critical).
+	oldDate := time.Now().UTC().AddDate(0, 0, -40).Format("2006-01-02")
+	overdueResp := ts.uploadMultipart(t, "/api/v1/invoices/ledger-upload", ts.WorkerToken,
+		map[string]string{
+			"invoice_number":     fmt.Sprintf("ALRT-OVD-%d", n),
+			"entity_gstin":       "06AAAAA0003A1Z3",
+			"buyer_gstin":        "06AAAAA0011A1ZB",
+			"invoice_date":       oldDate,
+			"taxable_amount":     "1000.00",
+			"total_amount":       "1050.00",
+			"payment_type":       "CREDIT",
+			"payment_terms_days": "0",
+		},
+		"file", "alert-overdue.jpg", minimalJPEG(t))
+	if overdueResp.StatusCode != http.StatusCreated {
+		t.Fatalf("upload overdue invoice: expected 201, got %d", overdueResp.StatusCode)
+	}
+	type uploadResponse struct {
+		Invoice struct {
+			ID string `json:"id"`
+		} `json:"invoice"`
+	}
+	overdueInvoice := decodeJSON[uploadResponse](t, overdueResp).Invoice.ID
+
+	type alertsBody struct {
+		Alerts []struct {
+			Type      string `json:"type"`
+			InvoiceID string `json:"invoice_id"`
+			AgeDays   int    `json:"age_days"`
+			Priority  string `json:"priority"`
+		} `json:"alerts"`
+	}
+	fetch := func(query string) alertsBody {
+		t.Helper()
+		resp := ts.get(t, "/api/v1/owner/alerts"+query, ts.ManagerToken)
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			t.Fatalf("alerts %q: expected 200, got %d: %s", query, resp.StatusCode, body)
+		}
+		return decodeJSON[alertsBody](t, resp)
+	}
+
+	all := fetch("")
+	var sawDispute, sawOverdue bool
+	for _, a := range all.Alerts {
+		switch {
+		case a.Type == "dispute" && a.InvoiceID == disputedInvoice:
+			sawDispute = true
+			if a.AgeDays != 0 || a.Priority != "warning" {
+				t.Fatalf("fresh dispute: expected age 0 priority warning, got %+v", a)
+			}
+		case a.Type == "overdue_invoice" && a.InvoiceID == overdueInvoice:
+			sawOverdue = true
+			if a.AgeDays < 39 || a.Priority != "critical" {
+				t.Fatalf("40-day overdue: expected age ~40 priority critical, got %+v", a)
+			}
+		}
+	}
+	if !sawDispute || !sawOverdue {
+		t.Fatalf("expected both alerts in unfiltered feed, got %+v", all.Alerts)
+	}
+
+	byType := fetch("?type=dispute")
+	for _, a := range byType.Alerts {
+		if a.Type != "dispute" {
+			t.Fatalf("type=dispute returned a %q alert", a.Type)
+		}
+	}
+	aged := fetch("?min_age_days=10")
+	for _, a := range aged.Alerts {
+		if a.AgeDays < 10 {
+			t.Fatalf("min_age_days=10 returned an alert aged %d", a.AgeDays)
+		}
+	}
+	var agedHasOverdue bool
+	for _, a := range aged.Alerts {
+		if a.InvoiceID == overdueInvoice {
+			agedHasOverdue = true
+		}
+	}
+	if !agedHasOverdue {
+		t.Fatal("min_age_days=10 should still include the 40-day overdue invoice")
+	}
+}
+
+func TestBuyerRequirementDelete(t *testing.T) {
+	ts := startTestServer(t)
+
+	buyerResp := ts.post(t, "/api/v1/buyers", ts.AdminToken, map[string]interface{}{
+		"name":  "Requirement Delete Test Buyer",
+		"gstin": "06AAAAA0016A1ZG",
+	})
+	type buyer struct {
+		ID string `json:"id"`
+	}
+	if buyerResp.StatusCode != http.StatusCreated && buyerResp.StatusCode != http.StatusOK {
+		t.Fatalf("create buyer: expected 200/201, got %d", buyerResp.StatusCode)
+	}
+	b := decodeJSON[buyer](t, buyerResp)
+
+	upsert := ts.post(t, "/api/v1/mobile/buyers/"+b.ID+"/requirements", ts.AdminToken,
+		map[string]interface{}{
+			"document_type":      "GATE_ENTRY_NOTE",
+			"label":              "Gate Entry Note",
+			"is_buyer_generated": true,
+		})
+	upsert.Body.Close()
+	if upsert.StatusCode != http.StatusOK && upsert.StatusCode != http.StatusCreated {
+		t.Fatalf("upsert requirement: expected 200/201, got %d", upsert.StatusCode)
+	}
+
+	// Workers cannot delete master data.
+	denied := ts.doRequest(t, http.MethodDelete,
+		"/api/v1/mobile/buyers/"+b.ID+"/requirements/GATE_ENTRY_NOTE", ts.WorkerToken, nil)
+	denied.Body.Close()
+	if denied.StatusCode != http.StatusForbidden {
+		t.Fatalf("worker delete: expected 403, got %d", denied.StatusCode)
+	}
+
+	del := ts.doRequest(t, http.MethodDelete,
+		"/api/v1/mobile/buyers/"+b.ID+"/requirements/gate_entry_note", ts.AdminToken, nil)
+	if del.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(del.Body)
+		t.Fatalf("delete requirement: expected 200, got %d: %s", del.StatusCode, body)
+	}
+	del.Body.Close()
+
+	// Requirement is gone from the buyer's list.
+	type requirementsResponse struct {
+		Requirements []struct {
+			DocumentType string `json:"document_type"`
+		} `json:"requirements"`
+	}
+	list := decodeJSON[requirementsResponse](t,
+		ts.get(t, "/api/v1/mobile/buyers/"+b.ID+"/requirements", ts.AdminToken))
+	for _, req := range list.Requirements {
+		if req.DocumentType == "GATE_ENTRY_NOTE" {
+			t.Fatal("requirement still present after delete")
+		}
+	}
+
+	// Idempotent: deleting again still succeeds.
+	again := ts.doRequest(t, http.MethodDelete,
+		"/api/v1/mobile/buyers/"+b.ID+"/requirements/GATE_ENTRY_NOTE", ts.AdminToken, nil)
+	again.Body.Close()
+	if again.StatusCode != http.StatusOK {
+		t.Fatalf("repeat delete: expected 200, got %d", again.StatusCode)
+	}
 }

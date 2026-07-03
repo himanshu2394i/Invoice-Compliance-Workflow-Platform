@@ -1214,6 +1214,18 @@ func (r *Repository) ListBuyerDocRequirements(ctx context.Context, tenantID, buy
 
 // UpsertBuyerDocRequirement inserts or updates a document requirement for a buyer.
 // Uses ON CONFLICT on the (organization_id, buyer_id, document_type) unique key.
+// DeleteBuyerDocRequirement removes one buyer document requirement.
+// Idempotent: deleting a requirement that doesn't exist is not an error,
+// so retried deletes and stale UIs converge on the same end state.
+func (r *Repository) DeleteBuyerDocRequirement(ctx context.Context, tenantID, buyerID, documentType string) error {
+	return r.WithTx(ctx, tenantID, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			"DELETE FROM buyer_document_requirements WHERE buyer_id = $1 AND document_type = $2",
+			buyerID, documentType)
+		return err
+	})
+}
+
 func (r *Repository) UpsertBuyerDocRequirement(ctx context.Context, tenantID string, req *BuyerDocRequirement) error {
 	if req.ID == "" {
 		req.ID = uuid.New().String()
@@ -1424,38 +1436,67 @@ type AlertItem struct {
 	Subtype       string    `json:"subtype"` // exception_type or dispute_type
 	Description   string    `json:"description"`
 	RaisedAt      time.Time `json:"raised_at"`
+	AgeDays       int       `json:"age_days"`
+	Priority      string    `json:"priority"` // "critical" | "warning"
 }
 
-func (r *Repository) GetOpenAlerts(ctx context.Context, tenantID string) ([]*AlertItem, error) {
+// AlertFilter narrows the alert feed. Zero values mean "no filter".
+type AlertFilter struct {
+	Type       string // exception | dispute | overdue_invoice
+	MinAgeDays int
+	Limit      int // 0 = server default
+	Offset     int
+}
+
+func (r *Repository) GetOpenAlerts(ctx context.Context, tenantID string, f AlertFilter) ([]*AlertItem, error) {
+	if f.Limit <= 0 || f.Limit > 500 {
+		f.Limit = 200
+	}
 	var out []*AlertItem
 	err := r.WithTx(ctx, tenantID, func(tx pgx.Tx) error {
+		// age_days counts from when the alert became actionable: raised_at
+		// for exceptions, created_at for disputes, due_date for overdue
+		// invoices (i.e. days overdue). Priority: critical when an overdue
+		// invoice is 30+ days past due or a dispute has sat open 7+ days.
 		rows, err := tx.Query(ctx, `
-			SELECT 'exception', e.invoice_id, i.invoice_number, e.exception_type, e.details::text, e.raised_at
-			FROM invoice_exceptions e JOIN invoices i ON i.id = e.invoice_id
-			WHERE e.status = 'open'
-			UNION ALL
-			SELECT 'dispute', d.invoice_id, i.invoice_number, d.dispute_type, d.description, d.created_at
-			FROM invoice_disputes d JOIN invoices i ON i.id = d.invoice_id
-			WHERE d.status IN ('OPEN', 'OWNER_REVIEWING')
-			UNION ALL
-			SELECT 'overdue_invoice', i.id, i.invoice_number, 'OVERDUE_INVOICE',
-			       'Payment overdue: balance ' || ROUND((i.gross_amount - COALESCE(p.paid, 0))::numeric, 2)::text ||
-			       ' was due ' || i.due_date::text,
-			       i.due_date::timestamptz
-			FROM invoices i
-			LEFT JOIN (SELECT invoice_id, SUM(amount) AS paid FROM invoice_payments GROUP BY invoice_id) p
-			  ON p.invoice_id = i.id
-			WHERE i.payment_type = 'CREDIT'
-			  AND i.due_date IS NOT NULL AND i.due_date < CURRENT_DATE
-			  AND i.gross_amount - COALESCE(p.paid, 0) > 0.005
-			ORDER BY 6 DESC`)
+			SELECT type, invoice_id, invoice_number, subtype, description, raised_at,
+			       GREATEST(0, CURRENT_DATE - raised_at::date)::int AS age_days,
+			       CASE
+			         WHEN type = 'overdue_invoice' AND CURRENT_DATE - raised_at::date >= 30 THEN 'critical'
+			         WHEN type = 'dispute' AND CURRENT_DATE - raised_at::date >= 7 THEN 'critical'
+			         ELSE 'warning'
+			       END AS priority
+			FROM (
+				SELECT 'exception' AS type, e.invoice_id, i.invoice_number, e.exception_type AS subtype, e.details::text AS description, e.raised_at
+				FROM invoice_exceptions e JOIN invoices i ON i.id = e.invoice_id
+				WHERE e.status = 'open'
+				UNION ALL
+				SELECT 'dispute', d.invoice_id, i.invoice_number, d.dispute_type, d.description, d.created_at
+				FROM invoice_disputes d JOIN invoices i ON i.id = d.invoice_id
+				WHERE d.status IN ('OPEN', 'OWNER_REVIEWING')
+				UNION ALL
+				SELECT 'overdue_invoice', i.id, i.invoice_number, 'OVERDUE_INVOICE',
+				       'Payment overdue: balance ' || ROUND((i.gross_amount - COALESCE(p.paid, 0))::numeric, 2)::text ||
+				       ' was due ' || i.due_date::text,
+				       i.due_date::timestamptz
+				FROM invoices i
+				LEFT JOIN (SELECT invoice_id, SUM(amount) AS paid FROM invoice_payments GROUP BY invoice_id) p
+				  ON p.invoice_id = i.id
+				WHERE i.payment_type = 'CREDIT'
+				  AND i.due_date IS NOT NULL AND i.due_date < CURRENT_DATE
+				  AND i.gross_amount - COALESCE(p.paid, 0) > 0.005
+			) alerts
+			WHERE ($1 = '' OR type = $1)
+			  AND GREATEST(0, CURRENT_DATE - raised_at::date) >= $2
+			ORDER BY raised_at DESC
+			LIMIT $3 OFFSET $4`, f.Type, f.MinAgeDays, f.Limit, f.Offset)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var a AlertItem
-			if err := rows.Scan(&a.Type, &a.InvoiceID, &a.InvoiceNumber, &a.Subtype, &a.Description, &a.RaisedAt); err != nil {
+			if err := rows.Scan(&a.Type, &a.InvoiceID, &a.InvoiceNumber, &a.Subtype, &a.Description, &a.RaisedAt, &a.AgeDays, &a.Priority); err != nil {
 				return err
 			}
 			out = append(out, &a)

@@ -6,6 +6,7 @@ import '../../core/api/api_client.dart';
 import '../../core/api/endpoints.dart';
 import '../../core/models/master_data.dart';
 import '../../core/models/receivables.dart';
+import '../../core/models/status_labels.dart';
 
 // ─── Data Models ─────────────────────────────────────────────────────────────
 
@@ -34,12 +35,14 @@ class OwnerDashboard {
 }
 
 class AlertItem {
-  final String type; // "exception" | "dispute"
+  final String type; // "exception" | "dispute" | "overdue_invoice"
   final String invoiceId;
   final String invoiceNumber;
   final String subtype;
   final String description;
   final DateTime raisedAt;
+  final int ageDays;
+  final String priority; // "critical" | "warning"
 
   const AlertItem({
     required this.type,
@@ -48,6 +51,8 @@ class AlertItem {
     required this.subtype,
     required this.description,
     required this.raisedAt,
+    this.ageDays = 0,
+    this.priority = 'warning',
   });
 
   factory AlertItem.fromJson(Map<String, dynamic> j) => AlertItem(
@@ -58,6 +63,8 @@ class AlertItem {
         description: j['description'] as String? ?? '',
         raisedAt: DateTime.tryParse(j['raised_at'] as String? ?? '') ??
             DateTime.now(),
+        ageDays: (j['age_days'] as num?)?.toInt() ?? 0,
+        priority: j['priority'] as String? ?? 'warning',
       );
 }
 
@@ -75,10 +82,10 @@ class OwnerInvoice {
   final int openExceptions;
   final int openDisputes;
   final int documentCount;
-  // Distributor-domain fields — present on the detail endpoint (raw invoice
-  // row), absent from the owner list rows.
+  // Distributor-domain fields (payment status for list/detail rows).
   final String? paymentType; // CASH | CREDIT
   final String? dueDate;
+  final double paidAmount;
 
   const OwnerInvoice({
     required this.id,
@@ -96,7 +103,26 @@ class OwnerInvoice {
     required this.documentCount,
     this.paymentType,
     this.dueDate,
+    this.paidAmount = 0,
   });
+
+  double get balance => grossAmount - paidAmount;
+
+  bool get isOverdue {
+    if (paymentType != 'CREDIT' || balance <= 0.005 || dueDate == null) {
+      return false;
+    }
+    final due = DateTime.tryParse(dueDate!);
+    return due != null && due.isBefore(DateTime.now());
+  }
+
+  /// Plain-language status for staff-facing lists.
+  String get statusLabel => invoiceStatusLabel(
+        currentState,
+        paymentType: paymentType,
+        overdue: isOverdue,
+        balance: paymentType == 'CREDIT' ? balance : null,
+      );
 
   factory OwnerInvoice.fromJson(Map<String, dynamic> j) => OwnerInvoice(
         id: j['id'] as String,
@@ -114,6 +140,7 @@ class OwnerInvoice {
         documentCount: (j['document_count'] as num? ?? 0).toInt(),
         paymentType: j['payment_type'] as String?,
         dueDate: j['due_date'] as String?,
+        paidAmount: (j['paid_amount'] as num? ?? 0).toDouble(),
       );
 }
 
@@ -306,8 +333,9 @@ class OwnerService {
     return OwnerDashboard.fromJson(resp.data as Map<String, dynamic>);
   }
 
-  Future<List<AlertItem>> getAlerts() async {
-    final resp = await _dio.get(Endpoints.ownerAlerts);
+  Future<List<AlertItem>> getAlerts({String type = ''}) async {
+    final resp = await _dio.get(Endpoints.ownerAlerts,
+        queryParameters: {if (type.isNotEmpty) 'type': type});
     return (resp.data['alerts'] as List? ?? [])
         .map((a) => AlertItem.fromJson(a as Map<String, dynamic>))
         .toList();

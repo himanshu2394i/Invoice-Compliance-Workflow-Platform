@@ -258,9 +258,12 @@ class _InvoiceListCard extends StatelessWidget {
           style: const TextStyle(fontWeight: FontWeight.w600),
         ),
         subtitle: Text(
-          '${invoice.buyerName ?? "Unknown"}  |  ${invoice.invoiceDate}  |  ${invoice.documentCount} doc${invoice.documentCount == 1 ? "" : "s"}',
+          '${invoice.statusLabel}  |  ${invoice.buyerName ?? "Unknown"}  |  ${invoice.invoiceDate}',
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
+          style: invoice.isOverdue
+              ? TextStyle(color: Colors.red.shade700)
+              : null,
         ),
         trailing: Column(
           mainAxisAlignment: MainAxisAlignment.center,

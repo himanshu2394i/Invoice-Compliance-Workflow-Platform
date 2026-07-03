@@ -154,3 +154,27 @@ func (s *Server) handleMobileUpsertBuyerRequirement(w http.ResponseWriter, r *ht
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
+
+// handleMobileDeleteBuyerRequirement removes a buyer document requirement.
+// ADMIN-only (enforced at route registration): requirements drive what
+// workers must photograph, so removing one is a master-data decision.
+func (s *Server) handleMobileDeleteBuyerRequirement(w http.ResponseWriter, r *http.Request) {
+	tenantID := claimsFromContext(r.Context()).OrganizationID
+	buyerID := r.PathValue("buyer_id")
+	documentType := strings.ToUpper(strings.TrimSpace(r.PathValue("document_type")))
+
+	if documentType == "" {
+		writeError(w, http.StatusBadRequest, "document_type is required")
+		return
+	}
+	// Confirm buyer belongs to this tenant before touching its config.
+	if _, err := s.Repo.GetBuyerByID(r.Context(), tenantID, buyerID); err != nil {
+		writeError(w, http.StatusNotFound, "Buyer not found")
+		return
+	}
+	if err := s.Repo.DeleteBuyerDocRequirement(r.Context(), tenantID, buyerID, documentType); err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to delete requirement: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}

@@ -30,7 +30,30 @@ func (s *Server) handleOwnerDashboard(w http.ResponseWriter, r *http.Request) {
 // have to remember to open the dashboard to find out something needs them.
 func (s *Server) handleGetAlerts(w http.ResponseWriter, r *http.Request) {
 	tenantID := claimsFromContext(r.Context()).OrganizationID
-	alerts, err := s.Repo.GetOpenAlerts(r.Context(), tenantID)
+	q := r.URL.Query()
+
+	filter := db.AlertFilter{Type: strings.TrimSpace(q.Get("type"))}
+	if filter.Type != "" && filter.Type != "exception" && filter.Type != "dispute" && filter.Type != "overdue_invoice" {
+		writeError(w, http.StatusBadRequest, "type must be exception, dispute, or overdue_invoice")
+		return
+	}
+	if v := q.Get("min_age_days"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			filter.MinAgeDays = n
+		}
+	}
+	if v := q.Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			filter.Limit = n
+		}
+	}
+	if v := q.Get("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			filter.Offset = n
+		}
+	}
+
+	alerts, err := s.Repo.GetOpenAlerts(r.Context(), tenantID, filter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to load alerts: "+err.Error())
 		return

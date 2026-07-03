@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../core/api/api_client.dart';
 import '../../core/api/endpoints.dart';
+import '../../core/models/status_labels.dart';
 
 /// Lets a worker see what happened to an invoice after they synced it --
 /// the local queue only tracks upload status, not the backend's approval/
@@ -79,7 +80,7 @@ class _MyInvoicesScreenState extends State<MyInvoicesScreen> {
         _ => Colors.grey,
       };
 
-  String _stateLabel(String state) => state.replaceAll('_', ' ');
+  String _stateLabel(String state) => invoiceStatusLabel(state);
 
   @override
   Widget build(BuildContext context) {

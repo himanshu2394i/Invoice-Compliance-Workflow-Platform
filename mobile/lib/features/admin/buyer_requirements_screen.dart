@@ -228,6 +228,39 @@ class _BuyerRequirementsDetailScreenState
     );
   }
 
+  Future<void> _confirmDelete(BuyerRequirement r) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Delete "${r.label}"?'),
+        content: const Text(
+            'Workers will no longer be asked to photograph this document for this buyer.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Delete')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await widget.dio.delete(Endpoints.buyerRequirementDelete(
+          widget.buyer.id, r.documentType));
+      _load();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text('Failed to delete: $e'),
+              backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -248,12 +281,13 @@ class _BuyerRequirementsDetailScreenState
                           margin: const EdgeInsets.only(bottom: 6),
                           child: ListTile(
                             title: Text(r.label),
-                            subtitle: Text(r.documentType),
-                            trailing: r.isBuyerGenerated
-                                ? const Chip(
-                                    label: Text('Buyer-generated',
-                                        style: TextStyle(fontSize: 11)))
-                                : null,
+                            subtitle: Text(r.documentType +
+                                (r.isBuyerGenerated ? ' • Buyer-generated' : '')),
+                            trailing: IconButton(
+                              icon: const Icon(Icons.delete_outline),
+                              tooltip: 'Delete requirement',
+                              onPressed: () => _confirmDelete(r),
+                            ),
                           ),
                         );
                       },

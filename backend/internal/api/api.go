@@ -74,6 +74,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/mobile/buyers/requirements", requireAuth(s.handleMobileGetBuyerRequirements))
 	mux.HandleFunc("GET /api/v1/mobile/buyers/{buyer_id}/requirements", requireAuth(s.handleMobileGetBuyerRequirements))
 	mux.HandleFunc("POST /api/v1/mobile/buyers/{buyer_id}/requirements", requireAuth(requireRole("WORKER", "ADMIN")(s.handleMobileUpsertBuyerRequirement)))
+	mux.HandleFunc("DELETE /api/v1/mobile/buyers/{buyer_id}/requirements/{document_type}", requireAuth(requireRole("ADMIN")(s.handleMobileDeleteBuyerRequirement)))
 
 	// Owner dashboard — invoice history, exceptions, dispute management
 	mux.HandleFunc("GET /api/v1/owner/dashboard", requireAuth(requireRole("ADMIN", "MANAGER", "FINANCE", "REVIEWER")(s.handleOwnerDashboard)))

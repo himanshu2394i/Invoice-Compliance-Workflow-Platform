@@ -33,6 +33,9 @@ class Endpoints {
   static String buyerRequirementsById(String buyerId) =>
       '$_base/api/v1/mobile/buyers/$buyerId/requirements';
 
+  static String buyerRequirementDelete(String buyerId, String documentType) =>
+      '$_base/api/v1/mobile/buyers/$buyerId/requirements/$documentType';
+
   static String invoiceDocuments(String invoiceId) =>
       '$_base/api/v1/invoices/$invoiceId/documents';
 
