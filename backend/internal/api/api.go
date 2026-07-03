@@ -48,6 +48,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 
 	// Everything else requires a verified JWT. Tenant ID and role come ONLY from
 	// the token from here on -- never from a client-supplied header or field.
+	mux.HandleFunc("POST /api/v1/auth/change-password", requireAuth(s.handleChangePassword))
+	mux.HandleFunc("POST /api/v1/auth/users/reset-password", requireAuth(requireRole("ADMIN")(s.handleAdminResetPassword)))
 	mux.HandleFunc("POST /api/v1/invoices", requireAuth(requireRole("WORKER", "ADMIN")(s.handleIngestInvoice)))
 	mux.HandleFunc("POST /api/v1/invoices/upload", requireAuth(requireRole("WORKER", "ADMIN")(s.handleUploadSimulated)))
 	mux.HandleFunc("POST /api/v1/invoices/ledger-upload", requireAuth(requireRole("WORKER", "ADMIN")(s.handleUploadLedgerInvoice)))
@@ -165,6 +167,9 @@ type InvoiceOCRPreviewResponse struct {
 	GrossAmount   float64            `json:"gross_amount,omitempty"`
 	TaxableAmount float64            `json:"taxable_amount,omitempty"`
 	TaxAmount     float64            `json:"tax_amount,omitempty"`
+	InvoiceDate   string             `json:"invoice_date,omitempty"`
+	PaymentType   string             `json:"payment_type,omitempty"`
+	BuyerName     string             `json:"buyer_name,omitempty"`
 	Simulated     bool               `json:"simulated,omitempty"`
 	Inconclusive  bool               `json:"inconclusive,omitempty"`
 	Confidence    map[string]float64 `json:"confidence,omitempty"`
@@ -175,11 +180,14 @@ type InvoiceOCRPreviewResponse struct {
 // worker sees when a field couldn't be read clearly.
 var previewFieldLabels = map[string]string{
 	"invoice_number": "invoice number",
+	"invoice_date":   "invoice date",
 	"seller_gstin":   "seller GSTIN",
 	"buyer_gstin":    "buyer GSTIN",
 	"taxable_amount": "taxable amount",
 	"tax_amount":     "tax amount",
 	"gross_amount":   "total amount",
+	"payment_type":   "payment type",
+	"buyer_name":     "buyer name",
 }
 
 func previewResponseFromInvoiceData(data validation.InvoiceData) InvoiceOCRPreviewResponse {
@@ -191,14 +199,22 @@ func previewResponseFromInvoiceData(data validation.InvoiceData) InvoiceOCRPrevi
 		GrossAmount:   data.GrossAmount,
 		TaxableAmount: data.NetAmount,
 		TaxAmount:     data.TaxAmount,
+		InvoiceDate:   strings.TrimSpace(data.InvoiceDate),
+		PaymentType:   strings.TrimSpace(data.PaymentType),
+		BuyerName:     strings.TrimSpace(data.BuyerName),
 		Simulated:     data.Simulated,
 		Inconclusive:  data.Inconclusive,
+	}
+	if resp.OCRAvailable {
+		// AI-authored warnings pass through verbatim (already plain
+		// language per the extraction prompt).
+		resp.Warnings = append(resp.Warnings, data.Warnings...)
 	}
 	if resp.OCRAvailable && len(data.Confidence) > 0 {
 		resp.Confidence = data.Confidence
 		// Warn about important fields that were extracted but read too
 		// poorly to autofill (< 0.70 per the ai-extraction-v1 thresholds).
-		for _, key := range []string{"invoice_number", "seller_gstin", "buyer_gstin", "taxable_amount", "tax_amount", "gross_amount"} {
+		for _, key := range []string{"invoice_number", "invoice_date", "seller_gstin", "buyer_gstin", "taxable_amount", "tax_amount", "gross_amount", "payment_type"} {
 			if hasPreviewValue(resp, key) && data.Confidence[key] < 0.70 {
 				resp.Warnings = append(resp.Warnings,
 					"AI could not read the "+previewFieldLabels[key]+" clearly - please verify it.")
@@ -214,6 +230,8 @@ func hasPreviewValue(resp InvoiceOCRPreviewResponse, key string) bool {
 	switch key {
 	case "invoice_number":
 		return resp.InvoiceNumber != ""
+	case "invoice_date":
+		return resp.InvoiceDate != ""
 	case "seller_gstin":
 		return resp.SellerGSTIN != ""
 	case "buyer_gstin":
@@ -224,6 +242,10 @@ func hasPreviewValue(resp InvoiceOCRPreviewResponse, key string) bool {
 		return resp.TaxAmount > 0
 	case "gross_amount":
 		return resp.GrossAmount > 0
+	case "payment_type":
+		return resp.PaymentType != ""
+	case "buyer_name":
+		return resp.BuyerName != ""
 	}
 	return false
 }

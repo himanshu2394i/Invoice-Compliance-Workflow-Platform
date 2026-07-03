@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import random
 import os
 import re
@@ -28,12 +29,34 @@ except ImportError:
     logging.warning("Transformers/PyTorch not installed. Falling back to Simulation Mode.")
 
 try:
-    from openai import AsyncOpenAI
-    openai_client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY", "mock-key"))
-    HAS_AI = True
+    from anthropic import AsyncAnthropic
+    HAS_CLAUDE_SDK = True
 except ImportError:
-    HAS_AI = False
-    logging.warning("OpenAI not installed. Falling back to Simulation Mode for AI.")
+    HAS_CLAUDE_SDK = False
+    logging.warning("anthropic SDK not installed. Claude AI extraction unavailable.")
+
+# Claude vision extraction is the primary extractor when an API key is
+# configured; Textract remains the fallback, then simulation. Structured
+# outputs (output_config.format with a JSON schema) make the response
+# guaranteed-valid JSON conforming to the ai_extraction_v1 envelope — no
+# prompt-level "please reply in JSON" needed.
+CLAUDE_MODEL = os.environ.get("CLAUDE_EXTRACTION_MODEL", "claude-opus-4-8")
+_claude_client = None
+
+
+def _claude_available() -> bool:
+    return HAS_CLAUDE_SDK and bool(os.environ.get("ANTHROPIC_API_KEY"))
+
+
+def _get_claude_client():
+    """Lazy singleton: constructing AsyncAnthropic requires the API key, so
+    only build it once we know the key is present. Tight timeout + no SDK
+    retries because the OCR preview endpoint only waits 20s end to end;
+    Textract is the retry path."""
+    global _claude_client
+    if _claude_client is None:
+        _claude_client = AsyncAnthropic(timeout=15.0, max_retries=0)
+    return _claude_client
 
 # Matches backend/internal/validation/validation.go's gstinRegex -- kept in sync
 # by hand since there's no shared schema between the Go and Python services.
@@ -58,6 +81,303 @@ def _parse_amount(raw):
         return float(cleaned)
     except ValueError:
         return None
+
+
+# ─── Claude AI extraction (ai_extraction_v1) ─────────────────────────────────
+# Schemas follow docs/superpowers/specs/2026-07-02-ai-structured-extraction-v1-design.md.
+# Structured-outputs rules: every object needs additionalProperties:false and
+# a full required list; nullable fields use type unions / anyOf; numeric
+# min/max constraints are not supported, so confidence bounds live in the
+# prompt instead.
+
+_CONFIDENCE_FIELDS = [
+    "invoice_number", "invoice_date", "seller_gstin", "buyer_gstin",
+    "taxable_amount", "tax_amount", "gross_amount", "payment_type", "buyer_name",
+]
+
+_WARNING_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "code": {"type": "string"},
+            "field": {"type": ["string", "null"]},
+            "message": {"type": "string"},
+            "severity": {"type": "string", "enum": ["info", "warning", "critical"]},
+        },
+        "required": ["code", "field", "message", "severity"],
+        "additionalProperties": False,
+    },
+}
+
+_CONFIDENCE_SCHEMA = {
+    "type": "object",
+    "properties": {k: {"type": "number"} for k in _CONFIDENCE_FIELDS},
+    "required": list(_CONFIDENCE_FIELDS),
+    "additionalProperties": False,
+}
+
+TAX_INVOICE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "schema_version": {"type": "string", "enum": ["ai_extraction_v1"]},
+        "document_type": {
+            "type": "string",
+            "enum": [
+                "TAX_INVOICE", "GATE_ENTRY_NOTE", "GRN_RECEIPT",
+                "SECURITY_INWARD_STAMP", "STOCK_RECEIVING_ACK", "CREDIT_NOTE",
+                "OTHER_SUPPORTING_DOCUMENT", "UNKNOWN",
+            ],
+        },
+        "extraction_status": {
+            "type": "string",
+            "enum": ["SUCCESS", "PARTIAL", "INCONCLUSIVE", "UNSUPPORTED_DOCUMENT"],
+        },
+        "invoice": {
+            "type": "object",
+            "properties": {
+                "invoice_number": {"type": ["string", "null"]},
+                "invoice_date": {"type": ["string", "null"]},
+                "seller_name": {"type": ["string", "null"]},
+                "seller_gstin": {"type": ["string", "null"]},
+                "buyer_name": {"type": ["string", "null"]},
+                "buyer_gstin": {"type": ["string", "null"]},
+                "po_number": {"type": ["string", "null"]},
+                "payment_type": {
+                    "anyOf": [
+                        {"type": "string", "enum": ["CASH", "CREDIT"]},
+                        {"type": "null"},
+                    ]
+                },
+                "taxable_amount": {"type": ["number", "null"]},
+                "tax_amount": {"type": ["number", "null"]},
+                "total_amount": {"type": ["number", "null"]},
+            },
+            "required": [
+                "invoice_number", "invoice_date", "seller_name", "seller_gstin",
+                "buyer_name", "buyer_gstin", "po_number", "payment_type",
+                "taxable_amount", "tax_amount", "total_amount",
+            ],
+            "additionalProperties": False,
+        },
+        "confidence": _CONFIDENCE_SCHEMA,
+        "warnings": _WARNING_SCHEMA,
+        "needs_human_review": {"type": "boolean"},
+    },
+    "required": [
+        "schema_version", "document_type", "extraction_status", "invoice",
+        "confidence", "warnings", "needs_human_review",
+    ],
+    "additionalProperties": False,
+}
+
+SUPPORTING_DOC_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "schema_version": {"type": "string", "enum": ["ai_extraction_v1"]},
+        "document_type": {
+            "type": "string",
+            "enum": [
+                "TAX_INVOICE", "GATE_ENTRY_NOTE", "GRN_RECEIPT",
+                "SECURITY_INWARD_STAMP", "STOCK_RECEIVING_ACK", "CREDIT_NOTE",
+                "OTHER_SUPPORTING_DOCUMENT", "UNKNOWN",
+            ],
+        },
+        "extraction_status": {
+            "type": "string",
+            "enum": ["SUCCESS", "PARTIAL", "INCONCLUSIVE", "UNSUPPORTED_DOCUMENT"],
+        },
+        "supporting_document": {
+            "type": "object",
+            "properties": {
+                "linked_invoice_number": {"type": ["string", "null"]},
+                "buyer_gstin": {"type": ["string", "null"]},
+                "invoice_amount": {"type": ["number", "null"]},
+                "accepted_quantity": {"type": ["number", "null"]},
+                "invoice_quantity": {"type": ["number", "null"]},
+                "discrepancy_amount": {"type": ["number", "null"]},
+            },
+            "required": [
+                "linked_invoice_number", "buyer_gstin", "invoice_amount",
+                "accepted_quantity", "invoice_quantity", "discrepancy_amount",
+            ],
+            "additionalProperties": False,
+        },
+        "confidence": {
+            "type": "object",
+            "properties": {
+                "linked_invoice_number": {"type": "number"},
+                "buyer_gstin": {"type": "number"},
+                "invoice_amount": {"type": "number"},
+            },
+            "required": ["linked_invoice_number", "buyer_gstin", "invoice_amount"],
+            "additionalProperties": False,
+        },
+        "needs_human_review": {"type": "boolean"},
+    },
+    "required": [
+        "schema_version", "document_type", "extraction_status",
+        "supporting_document", "confidence", "needs_human_review",
+    ],
+    "additionalProperties": False,
+}
+
+_EXTRACTION_RULES = """You are extracting data from a photo of an Indian GST document for a Gurgaon FMCG distributor (seller entities: Meridian Brothers, Meridian Distributors, Meridian Gurgaon).
+
+Rules:
+- Never invent values. Use null for anything not clearly visible.
+- GSTINs are 15 characters, uppercase (format: 2 digits, 5 letters, 4 digits, 1 letter, 1 char, Z, 1 char). The seller GSTIN belongs to the party issuing the document; the buyer GSTIN to the party billed/shipped to.
+- Dates in ISO format YYYY-MM-DD (Indian documents often print DD.MM.YYYY or DD/MM/YYYY — convert).
+- Amounts as plain decimal numbers without currency symbols or thousands separators. total_amount is the final bill/grand total; taxable_amount the pre-tax value; tax_amount the total GST.
+- payment_type: CASH or CREDIT if printed (e.g. "P-MODE: Cash", "Bill Type: CREDIT", "Payment Type"), else null.
+- Every confidence value is between 0.0 and 1.0 and reflects both legibility and your certainty. Use below 0.7 for anything you would want a human to re-check.
+- Add a warning entry for every unclear, missing, or suspicious important field.
+- Set needs_human_review true when extraction_status is not SUCCESS or any important field has confidence below 0.7."""
+
+
+def _guess_media_type(image_path: str) -> str:
+    lower = image_path.lower()
+    if lower.endswith(".png"):
+        return "image/png"
+    if lower.endswith(".webp"):
+        return "image/webp"
+    return "image/jpeg"
+
+
+def _load_image_b64(image_path: str) -> str:
+    with open(image_path, "rb") as f:
+        return base64.standard_b64encode(f.read()).decode("utf-8")
+
+
+async def _claude_extract_json(image_path: str, schema: dict, instruction: str):
+    """One Claude vision call with structured outputs. The response's first
+    text block is guaranteed by the API to be valid JSON conforming to the
+    schema, so json.loads never sees free-form prose. Returns the parsed dict
+    or None on any failure (refusal, truncation, timeout) so callers can fall
+    back to Textract."""
+    client = _get_claude_client()
+    response = await client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=2048,
+        output_config={
+            "format": {"type": "json_schema", "schema": schema},
+            # Low effort keeps the call inside the OCR preview's 20s budget;
+            # header extraction is a simple perception task.
+            "effort": "low",
+        },
+        messages=[{
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": _guess_media_type(image_path),
+                        "data": _load_image_b64(image_path),
+                    },
+                },
+                {"type": "text", "text": instruction},
+            ],
+        }],
+    )
+    if response.stop_reason == "refusal":
+        activity.logger.warning("Claude declined the extraction request.")
+        return None
+    if response.stop_reason == "max_tokens":
+        activity.logger.warning("Claude extraction hit max_tokens; JSON may be truncated.")
+        return None
+    text = next((b.text for b in response.content if b.type == "text"), "")
+    return json.loads(text)
+
+
+async def _extract_via_claude(image_path: str):
+    """Full tax-invoice extraction via Claude. Returns the pipeline dict shape
+    (same keys the Go side unmarshals into validation.InvoiceData) or None to
+    fall back to Textract."""
+    try:
+        data = await _claude_extract_json(
+            image_path, TAX_INVOICE_SCHEMA,
+            _EXTRACTION_RULES + "\n\nExtract the tax invoice header and totals from this photo.",
+        )
+    except Exception as e:
+        activity.logger.warning(f"Claude extraction failed: {e}")
+        return None
+    if not data:
+        return None
+    if data.get("extraction_status") in ("INCONCLUSIVE", "UNSUPPORTED_DOCUMENT"):
+        activity.logger.warning(
+            f"Claude extraction inconclusive (status={data.get('extraction_status')}); falling back.")
+        return None
+
+    inv = data.get("invoice") or {}
+    conf = data.get("confidence") or {}
+    gross = inv.get("total_amount")
+    if gross is None:
+        # Same convention as the Textract path: without a total the
+        # extraction isn't usable for validation downstream.
+        activity.logger.warning("Claude found no total amount; falling back.")
+        return None
+    tax = inv.get("tax_amount") or 0.0
+    net = inv.get("taxable_amount")
+    if net is None:
+        net = gross - tax
+
+    warnings = [
+        w.get("message", "")
+        for w in (data.get("warnings") or [])
+        if isinstance(w, dict) and w.get("message")
+    ]
+
+    return {
+        "InvoiceNumber": (inv.get("invoice_number") or "").strip(),
+        "GrossAmount": float(gross),
+        "NetAmount": float(net),
+        "TaxAmount": float(tax),
+        "VendorGSTIN": (inv.get("seller_gstin") or "").strip().upper(),
+        "BuyerGSTIN": (inv.get("buyer_gstin") or "").strip().upper(),
+        "InvoiceDate": (inv.get("invoice_date") or "").strip(),
+        "PaymentType": (inv.get("payment_type") or "").strip().upper(),
+        "BuyerName": (inv.get("buyer_name") or "").strip(),
+        "Simulated": False,
+        "Inconclusive": False,
+        "Confidence": {k: float(conf.get(k) or 0.0) for k in _CONFIDENCE_FIELDS},
+        "Warnings": warnings,
+    }
+
+
+async def _extract_header_via_claude(image_path: str):
+    """Supporting-document (gate entry / GRN / stamp) header extraction via
+    Claude, mapped onto the lighter matching shape. Returns None to fall back
+    to Textract."""
+    try:
+        data = await _claude_extract_json(
+            image_path, SUPPORTING_DOC_SCHEMA,
+            _EXTRACTION_RULES
+            + "\n\nThis is a SUPPORTING document (gate entry note, GRN, receiving stamp, or credit note) "
+            + "attached to an invoice. Extract the referenced invoice number, buyer GSTIN, and amounts "
+            + "needed to match it back to that invoice.",
+        )
+    except Exception as e:
+        activity.logger.warning(f"Claude header extraction failed: {e}")
+        return None
+    if not data:
+        return None
+
+    doc = data.get("supporting_document") or {}
+    invoice_number = (doc.get("linked_invoice_number") or "").strip()
+    gstin = (doc.get("buyer_gstin") or "").strip().upper()
+    amount = doc.get("invoice_amount")
+    inconclusive = (
+        data.get("extraction_status") in ("INCONCLUSIVE", "UNSUPPORTED_DOCUMENT")
+        or (not invoice_number and not gstin and amount is None)
+    )
+    return {
+        "InvoiceNumber": invoice_number,
+        "BuyerGSTIN": gstin,
+        "Amount": float(amount) if amount is not None else None,
+        "Simulated": False,
+        "Inconclusive": inconclusive,
+    }
 
 
 def _extract_via_textract(image_path: str):
@@ -224,6 +544,14 @@ async def extract_document_header(storage_key: str) -> dict:
     activity.logger.info(f"Starting header extraction for supporting document: {storage_key}")
     image_path = os.path.join(_storage_root(), storage_key)
 
+    if _claude_available() and os.path.exists(image_path):
+        activity.logger.info(f"Attempting AI header extraction via Claude ({CLAUDE_MODEL})")
+        result = await _extract_header_via_claude(image_path)
+        if result is not None:
+            activity.logger.info(f"Claude header extraction succeeded: {result}")
+            return result
+        activity.logger.warning("Claude header extraction failed; trying Textract.")
+
     if HAS_AWS and os.path.exists(image_path):
         activity.logger.info("Attempting header extraction via AWS Textract AnalyzeExpense")
         result = await asyncio.to_thread(_extract_header_via_textract, image_path)
@@ -256,6 +584,14 @@ async def extract_text_and_layout(storage_key: str) -> dict:
     """
     activity.logger.info(f"Starting OCR extraction for: {storage_key}")
     image_path = os.path.join(_storage_root(), storage_key)
+
+    if _claude_available() and os.path.exists(image_path):
+        activity.logger.info(f"Attempting AI extraction via Claude ({CLAUDE_MODEL})")
+        result = await _extract_via_claude(image_path)
+        if result is not None:
+            activity.logger.info(f"Claude extraction succeeded: {result}")
+            return result
+        activity.logger.warning("Claude extraction unavailable or inconclusive; trying Textract.")
 
     if HAS_AWS:
         if os.path.exists(image_path):
@@ -311,38 +647,51 @@ async def extract_text_and_layout(storage_key: str) -> dict:
     return extracted_data
 
 
+_DISCREPANCY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "resolved": {"type": "boolean"},
+        "reasoning": {"type": "string"},
+    },
+    "required": ["resolved", "reasoning"],
+    "additionalProperties": False,
+}
+
+
 @activity.defn(name="AIResolveDiscrepancy")
 async def ai_resolve_discrepancy(context_data: dict) -> dict:
     """
-    Passes the failed validation context to an LLM Agent (GPT-4) to determine 
-    if the discrepancy is acceptable (e.g. slight name mismatch, 1 cent rounding error)
+    Passes the failed validation context to Claude to determine whether the
+    discrepancy is acceptable (e.g. a rounding error) or a critical failure.
+    Structured outputs guarantee the {resolved, reasoning} JSON shape.
     """
-    activity.logger.info(f"Starting AI Agent Resolution for validation failure.")
-    
-    if HAS_AI and os.environ.get("OPENAI_API_KEY"):
-        activity.logger.info("Executing REAL OpenAI GPT-4o inference")
-        prompt = f"""
-        You are an AI Compliance Officer. The deterministic validation engine failed an invoice.
-        Here is the extracted invoice data and the validation errors:
-        {json.dumps(context_data, indent=2)}
-        
-        Determine if this is a minor acceptable discrepancy (like a 1 cent rounding error) 
-        or a critical failure. Reply in strictly JSON format: 
-        {{"resolved": true/false, "reasoning": "..."}}
-        """
-        
+    activity.logger.info("Starting AI Agent Resolution for validation failure.")
+
+    if _claude_available():
+        prompt = f"""You are a compliance reviewer for an FMCG distributor. The deterministic validation engine failed an invoice.
+Here is the extracted invoice data and the validation errors:
+{json.dumps(context_data, indent=2)}
+
+Decide whether this is a minor acceptable discrepancy (like a rounding error of a rupee or less, or a trivial formatting difference) or a critical failure requiring human review. Be conservative: when in doubt, do not resolve."""
         try:
-            response = await openai_client.chat.completions.create(
-                model="gpt-4o",
+            client = _get_claude_client()
+            response = await client.messages.create(
+                model=CLAUDE_MODEL,
+                max_tokens=1024,
+                output_config={
+                    "format": {"type": "json_schema", "schema": _DISCREPANCY_SCHEMA},
+                    "effort": "low",
+                },
                 messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"}
             )
-            result = json.loads(response.choices[0].message.content)
-            activity.logger.info(f"AI Agent Decision: {result}")
-            return result
+            if response.stop_reason not in ("refusal", "max_tokens"):
+                text = next((b.text for b in response.content if b.type == "text"), "")
+                result = json.loads(text)
+                activity.logger.info(f"AI Agent Decision: {result}")
+                return result
         except Exception as e:
             activity.logger.error(f"AI Inference failed: {e}")
-            
+
     # Fail closed: without a real model decision, require human review.
     activity.logger.info("AI unavailable; escalating discrepancy to human review")
     await asyncio.sleep(0.2)

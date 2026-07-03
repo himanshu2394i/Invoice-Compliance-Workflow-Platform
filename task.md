@@ -118,19 +118,19 @@ than the mobile app exposes, and several rough edges in the capture flow.
 
 ### Known gaps not yet on this list
 
-- No password-change/reset endpoint exists anywhere in the backend.
-- No delete endpoint for buyer document requirements (upsert-only).
+- Password-change/reset and buyer requirement delete support have since been
+  implemented; keep this section for future newly found gaps.
 
 ## Phase 8 — Navigation, search, and product hardening roadmap (2026-07-01)
 
 - `[x]` Add app-wide Android back handling and visible back buttons across mobile screens.
 - `[x]` Add admin/manager invoice search by invoice number, buyer, GSTIN, amount, and status.
 - `[x]` Add OCR review cues on autofilled worker fields. Numeric confidence display waits on backend confidence values.
-- `[ ]` Add photo quality checks for blur, darkness, and missing document edges.
+- `[x]` Add photo quality checks for blur, darkness, and missing document edges.
 - `[x]` Add duplicate-invoice warning before submit.
 - `[x]` Add capture draft recovery.
-- `[ ]` Add alert filters and aging for exceptions/disputes/approval work.
-- `[ ]` Add password-change/reset support before real staff rollout.
+- `[x]` Add alert filters and aging for exceptions/disputes/approval work.
+- `[x]` Add password-change/reset support before real staff rollout.
 - `[ ]` Add MFA for admin/manager users before broader pilot use.
 - `[ ]` Define DPDP/CERT-In operating checklist while keeping data indefinitely for now.
 
@@ -239,3 +239,13 @@ typing ("it should have taken everything on its own is the whole premise").
   `go build ./...`, `go vet ./...`,
   `puro flutter test test/capture/bundle_provider_test.dart test/capture/review_screen_test.dart`,
   and `puro flutter analyze` at the existing 27-issue baseline.
+- `[x]` Photo quality warning gate for worker captures: local mobile analyzer
+  checks lighting, blur, and framing before saving captured images. Bad photos
+  show `Retake` / `Use Anyway`, so field work is not hard-blocked. Verified
+  `puro flutter test test/capture/photo_quality_test.dart test/capture/bundle_provider_test.dart test/capture/review_screen_test.dart`
+  and `puro flutter analyze`; analyzer baseline lowered from 27 to 26 after
+  removing an existing camera async-context warning.
+- `[x]` Password management for real staff rollout: users can change their own
+  password from Settings, and ADMIN can reset a staff password by email.
+  Backend routes are `POST /api/v1/auth/change-password` and
+  `POST /api/v1/auth/users/reset-password`; both store bcrypt hashes only.

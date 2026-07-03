@@ -40,6 +40,9 @@ class InvoiceOCRPreview {
   final String? buyerGstin;
   final double? taxableAmount;
   final double? grossAmount;
+  final String? invoiceDate; // ISO YYYY-MM-DD (Claude extraction only)
+  final String? paymentType; // CASH | CREDIT (Claude extraction only)
+  final String? buyerName;
 
   /// Per-field extraction confidence (0..1). Empty when the server predates
   /// confidence reporting — treat that as "fill with a verify cue".
@@ -53,6 +56,9 @@ class InvoiceOCRPreview {
     this.buyerGstin,
     this.taxableAmount,
     this.grossAmount,
+    this.invoiceDate,
+    this.paymentType,
+    this.buyerName,
     this.confidence = const {},
     this.warnings = const [],
   });
@@ -74,6 +80,9 @@ class InvoiceOCRPreview {
         buyerGstin: json['buyer_gstin'] as String?,
         taxableAmount: (json['taxable_amount'] as num?)?.toDouble(),
         grossAmount: (json['gross_amount'] as num?)?.toDouble(),
+        invoiceDate: json['invoice_date'] as String?,
+        paymentType: json['payment_type'] as String?,
+        buyerName: json['buyer_name'] as String?,
         confidence: ((json['confidence'] as Map?) ?? const {}).map(
             (k, v) => MapEntry(k.toString(), (v as num?)?.toDouble() ?? 0)),
         warnings: ((json['warnings'] as List?) ?? const [])
@@ -403,6 +412,42 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
       if (_totalCtrl.text.trim().isEmpty && data.grossAmount != null) {
         fillIfEmpty(_totalCtrl, data.grossAmount!.toStringAsFixed(2),
             'gross_amount', 'total amount');
+      }
+
+      // Invoice date: the field is prefilled with today's date, so treat
+      // that default as "empty" — a photographed invoice usually predates
+      // the capture. Only replace with a well-formed, confident AI date.
+      final aiDate = data.invoiceDate?.trim() ?? '';
+      if (aiDate.isNotEmpty &&
+          RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(aiDate) &&
+          data.shouldFill('invoice_date')) {
+        final today = DateTime.now();
+        final todayText =
+            '${today.year.toString().padLeft(4, '0')}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
+        final current = _invDateCtrl.text.trim();
+        if ((current.isEmpty || current == todayText) && current != aiDate) {
+          _invDateCtrl.text = aiDate;
+          filled.add('invoice date');
+          if (data.isHighConfidence('invoice_date')) {
+            highConfidenceFields.add('invoice_date');
+          } else {
+            filledFields.add('invoice_date');
+          }
+        }
+      }
+
+      // Payment type as printed on the invoice (Cash/Credit toggle).
+      final aiPaymentType = data.paymentType?.trim().toUpperCase() ?? '';
+      if ((aiPaymentType == 'CASH' || aiPaymentType == 'CREDIT') &&
+          data.shouldFill('payment_type') &&
+          aiPaymentType != _paymentType) {
+        _paymentType = aiPaymentType;
+        filled.add('payment type (${aiPaymentType.toLowerCase()})');
+      }
+
+      // Buyer name, only when GSTIN lookup didn't already resolve one.
+      if (_buyerNameCtrl.text.trim().isEmpty) {
+        fillIfEmpty(_buyerNameCtrl, data.buyerName, 'buyer_name', 'buyer name');
       }
       if (mounted) {
         setState(() {

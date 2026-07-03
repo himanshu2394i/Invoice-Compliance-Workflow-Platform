@@ -4,6 +4,9 @@ class Endpoints {
   static String get _base => ServerConfig.baseUrl;
 
   static String get login => '$_base/api/v1/auth/login';
+  static String get changePassword => '$_base/api/v1/auth/change-password';
+  static String get resetStaffPassword =>
+      '$_base/api/v1/auth/users/reset-password';
   static String get entities => '$_base/api/v1/entities';
   static String get buyers => '$_base/api/v1/buyers';
   static String get ledgerUpload => '$_base/api/v1/invoices/ledger-upload';

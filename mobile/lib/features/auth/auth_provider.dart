@@ -60,8 +60,51 @@ class AuthNotifier extends StateNotifier<AuthState> {
     } catch (e) {
       state = state.copyWith(
         isLoading: false,
-        error: _extractError(e),
+        error: _extractError(e, fallback: 'Login failed'),
       );
+    }
+  }
+
+  Future<bool> changePassword(
+      String currentPassword, String newPassword) async {
+    state = state.copyWith(isLoading: true, error: null);
+    try {
+      await _dio.post(
+        Endpoints.changePassword,
+        data: {
+          'current_password': currentPassword,
+          'new_password': newPassword,
+        },
+      );
+      state = state.copyWith(isLoading: false, error: null);
+      return true;
+    } catch (e) {
+      state = state.copyWith(
+        isLoading: false,
+        error: _extractError(e, fallback: 'Password change failed'),
+      );
+      return false;
+    }
+  }
+
+  Future<bool> resetStaffPassword(String email, String newPassword) async {
+    state = state.copyWith(isLoading: true, error: null);
+    try {
+      await _dio.post(
+        Endpoints.resetStaffPassword,
+        data: {
+          'email': email,
+          'new_password': newPassword,
+        },
+      );
+      state = state.copyWith(isLoading: false, error: null);
+      return true;
+    } catch (e) {
+      state = state.copyWith(
+        isLoading: false,
+        error: _extractError(e, fallback: 'Password reset failed'),
+      );
+      return false;
     }
   }
 
@@ -70,18 +113,20 @@ class AuthNotifier extends StateNotifier<AuthState> {
     state = const AuthState();
   }
 
-  String _extractError(Object e) {
+  String _extractError(Object e, {required String fallback}) {
     if (e is DioException) {
       final data = e.response?.data;
-      if (data is Map && data['error'] is String) return data['error'] as String;
+      if (data is Map && data['error'] is String) {
+        return data['error'] as String;
+      }
       if (e.type == DioExceptionType.connectionTimeout ||
           e.type == DioExceptionType.connectionError ||
           e.type == DioExceptionType.unknown) {
         return 'Could not reach the server. Check the server address in Settings.';
       }
-      return 'Login failed (${e.response?.statusCode ?? 'no response'}).';
+      return '$fallback (${e.response?.statusCode ?? 'no response'}).';
     }
-    return 'Login failed. Check your connection and try again.';
+    return '$fallback. Check your connection and try again.';
   }
 }
 

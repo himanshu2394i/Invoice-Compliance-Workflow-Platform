@@ -8,6 +8,7 @@ import 'package:uuid/uuid.dart';
 import '../../core/models/bundle.dart';
 import '../../core/storage/image_store.dart';
 import 'bundle_provider.dart';
+import 'photo_quality.dart';
 
 // Which document is being photographed — injected via GoRouter extras.
 class CameraTarget {
@@ -98,17 +99,35 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
   Future<void> _capture() async {
     if (_controller == null || !_controller!.value.isInitialized) return;
     if (_isCapturing) return;
+    final extra = GoRouterState.of(context).extra;
+    final target = extra is CameraTarget ? extra : null;
+    final isPrimary = target?.isPrimary ?? true;
     setState(() => _isCapturing = true);
 
     try {
       final xFile = await _controller!.takePicture();
-      final compressedPath = await ImageStore.saveCompressed(File(xFile.path));
-      // Delete temp camera file
-      await File(xFile.path).delete();
+      final tempFile = File(xFile.path);
+      final quality = await PhotoQualityService.analyzeFile(tempFile);
+      if (quality.shouldWarn && mounted) {
+        final useAnyway = await _showQualityWarning(quality);
+        if (!mounted) {
+          await tempFile.delete();
+          return;
+        }
+        if (!useAnyway) {
+          await tempFile.delete();
+          setState(() => _isCapturing = false);
+          return;
+        }
+      }
+      if (!mounted) {
+        await tempFile.delete();
+        return;
+      }
 
-      final extra = GoRouterState.of(context).extra;
-      final target = extra is CameraTarget ? extra : null;
-      final isPrimary = target?.isPrimary ?? true;
+      final compressedPath = await ImageStore.saveCompressed(tempFile);
+      // Delete temp camera file
+      await tempFile.delete();
 
       if (isPrimary) {
         final replaceIndex = target?.replaceIndex;
@@ -142,6 +161,44 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
         );
       }
     }
+  }
+
+  Future<bool> _showQualityWarning(PhotoQualityResult quality) async {
+    return await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) => AlertDialog(
+            title: const Text('Photo may be hard to read'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (final issue in quality.issues)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('- '),
+                        Expanded(child: Text(issue.message)),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('Retake'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(context).pop(true),
+                child: const Text('Use Anyway'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
   }
 
   @override

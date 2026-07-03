@@ -39,6 +39,84 @@ func TestProtectedRoute_WrongRole_Returns403(t *testing.T) {
 	}
 }
 
+func TestChangePassword_RejectsWrongCurrentPassword(t *testing.T) {
+	ts := startTestServer(t)
+	resp := ts.post(t, "/api/v1/auth/change-password", ts.AdminToken, map[string]string{
+		"current_password": "wrong-password",
+		"new_password":     "BetterPass2026",
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for wrong current password, got %d", resp.StatusCode)
+	}
+}
+
+func TestChangePassword_UpdatesLoginCredential(t *testing.T) {
+	ts := startTestServer(t)
+	adminEmail := "admin+" + ts.OrgID[:8] + "@demo.local"
+	newPassword := "BetterPass2026"
+
+	resp := ts.post(t, "/api/v1/auth/change-password", ts.AdminToken, map[string]string{
+		"current_password": "ChangeMe123!",
+		"new_password":     newPassword,
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected password change to succeed, got %d", resp.StatusCode)
+	}
+
+	oldLogin := ts.post(t, "/api/v1/auth/login", "", map[string]string{
+		"email":    adminEmail,
+		"password": "ChangeMe123!",
+	})
+	defer oldLogin.Body.Close()
+	if oldLogin.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected old password to stop working, got %d", oldLogin.StatusCode)
+	}
+
+	_ = ts.loginAs(t, adminEmail, newPassword)
+}
+
+func TestAdminResetPassword_UpdatesStaffLoginCredential(t *testing.T) {
+	ts := startTestServer(t)
+	workerEmail := "worker+" + ts.OrgID[:8] + "@demo.local"
+	newPassword := "ResetPass2026"
+
+	resp := ts.post(t, "/api/v1/auth/users/reset-password", ts.AdminToken, map[string]string{
+		"email":        workerEmail,
+		"new_password": newPassword,
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected admin reset to succeed, got %d", resp.StatusCode)
+	}
+
+	oldLogin := ts.post(t, "/api/v1/auth/login", "", map[string]string{
+		"email":    workerEmail,
+		"password": "ChangeMe123!",
+	})
+	defer oldLogin.Body.Close()
+	if oldLogin.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected old worker password to stop working, got %d", oldLogin.StatusCode)
+	}
+
+	_ = ts.loginAs(t, workerEmail, newPassword)
+}
+
+func TestAdminResetPassword_WorkerCannotResetPassword(t *testing.T) {
+	ts := startTestServer(t)
+	managerEmail := "manager+" + ts.OrgID[:8] + "@demo.local"
+
+	resp := ts.post(t, "/api/v1/auth/users/reset-password", ts.WorkerToken, map[string]string{
+		"email":        managerEmail,
+		"new_password": "ResetPass2026",
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected worker reset attempt to be forbidden, got %d", resp.StatusCode)
+	}
+}
+
 func TestCrossTenant_CannotReadOtherOrgsInvoice(t *testing.T) {
 	tsA := startTestServer(t)
 	tsB := startTestServer(t) // a second, independently-seeded tenant on a second server

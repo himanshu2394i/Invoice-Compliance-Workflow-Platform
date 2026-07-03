@@ -1,2 +1,5 @@
 temporalio==1.4.0
 boto3>=1.34,<2.0
+# Claude AI extraction (structured outputs via output_config need a current
+# SDK; intentionally unpinned so image rebuilds track the latest release).
+anthropic

@@ -40,6 +40,8 @@ services:
       context: ./backend/python_worker
     environment:
       - TEMPORAL_HOST=temporal:7233
+      # Claude AI extraction (optional locally; Textract/simulation fallback)
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       # The host-run API (go run cmd/api from backend/) writes uploads to
       # backend/storage; the extraction activities must read those same
       # files or every extraction silently falls back to simulation mode.

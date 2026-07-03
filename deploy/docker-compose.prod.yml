@@ -52,6 +52,9 @@ services:
       # No AWS access keys here on purpose -- boto3 picks up credentials from
       # the EC2 instance's IAM role automatically via the metadata service.
       - AWS_REGION=ap-south-1
+      # Claude AI extraction (primary extractor when set; Textract remains
+      # the fallback). Empty/unset = Textract-only, no behavior change.
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       # Must match the api service's STORAGE_ROOT: the extraction activities
       # read the exact files the api saved. Without this shared volume the
       # worker's os.path.exists() check fails for every document and ALL

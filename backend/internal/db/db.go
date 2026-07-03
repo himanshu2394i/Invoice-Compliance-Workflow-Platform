@@ -242,6 +242,30 @@ func (r *Repository) GetUserByEmail(ctx context.Context, email string) (*User, e
 	return &u, nil
 }
 
+func (r *Repository) GetUserByID(ctx context.Context, orgID, userID string) (*User, error) {
+	var u User
+	err := r.Pool.QueryRow(ctx,
+		"SELECT id, organization_id, email, password_hash, full_name, role, created_at FROM users WHERE id = $1 AND organization_id = $2",
+		userID, orgID).Scan(&u.ID, &u.OrganizationID, &u.Email, &u.PasswordHash, &u.FullName, &u.Role, &u.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+func (r *Repository) UpdateUserPassword(ctx context.Context, orgID, userID, passwordHash string) error {
+	tag, err := r.Pool.Exec(ctx,
+		"UPDATE users SET password_hash = $1 WHERE id = $2 AND organization_id = $3",
+		passwordHash, userID, orgID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
 // Global administration functions (not constrained by tenant RLS for creation)
 func (r *Repository) CreateOrganization(ctx context.Context, name string) (*Organization, error) {
 	org := &Organization{

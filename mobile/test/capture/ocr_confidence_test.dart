@@ -29,6 +29,28 @@ void main() {
     expect(preview.warnings, hasLength(1));
   });
 
+  test('Claude extraction fields parse from the preview payload', () {
+    final preview = InvoiceOCRPreview.fromJson({
+      'ocr_available': true,
+      'invoice_number': 'A260000218',
+      'invoice_date': '2026-06-09',
+      'payment_type': 'CASH',
+      'buyer_name': 'Airplaza Retail Holdings Pvt Ltd',
+      'confidence': {
+        'invoice_date': 0.92,
+        'payment_type': 0.75,
+        'buyer_name': 0.88,
+      },
+    });
+    expect(preview.invoiceDate, '2026-06-09');
+    expect(preview.paymentType, 'CASH');
+    expect(preview.buyerName, 'Airplaza Retail Holdings Pvt Ltd');
+    expect(preview.shouldFill('invoice_date'), isTrue);
+    expect(preview.isHighConfidence('invoice_date'), isTrue);
+    expect(preview.shouldFill('payment_type'), isTrue);
+    expect(preview.isHighConfidence('payment_type'), isFalse);
+  });
+
   test('a server without confidence data keeps legacy fill behavior', () {
     final preview = InvoiceOCRPreview.fromJson({
       'ocr_available': true,

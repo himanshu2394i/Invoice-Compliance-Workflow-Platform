@@ -16,10 +16,20 @@ type InvoiceData struct {
 	TaxAmount     float64
 	Simulated     bool
 	Inconclusive  bool
+	// Claude AI extraction fields (empty when the extractor was Textract,
+	// which can't read these). InvoiceDate is ISO YYYY-MM-DD; PaymentType is
+	// CASH or CREDIT as printed on the invoice.
+	InvoiceDate string
+	PaymentType string
+	BuyerName   string
+	// Plain-language extraction warnings from the AI, surfaced verbatim to
+	// the capture screen.
+	Warnings []string
 	// Per-field extraction confidence (0..1) keyed by API field name
-	// (invoice_number, gross_amount, taxable_amount, tax_amount,
-	// seller_gstin, buyer_gstin). Nil/empty when the extractor predates
-	// confidence reporting; missing keys mean low confidence.
+	// (invoice_number, invoice_date, gross_amount, taxable_amount,
+	// tax_amount, seller_gstin, buyer_gstin, payment_type, buyer_name).
+	// Nil/empty when the extractor predates confidence reporting; missing
+	// keys mean low confidence.
 	Confidence map[string]float64
 }
 

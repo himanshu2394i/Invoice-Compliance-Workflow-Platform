@@ -46,6 +46,10 @@ void main() {
   // when given an absolute URL (as Endpoints.login produces). So the mock
   // route must be the full URL, not a bare path.
   final loginUrl = '${ServerConfig.baseUrl}/api/v1/auth/login';
+  final changePasswordUrl =
+      '${ServerConfig.baseUrl}/api/v1/auth/change-password';
+  final resetPasswordUrl =
+      '${ServerConfig.baseUrl}/api/v1/auth/users/reset-password';
 
   setUp(() {
     // Each test should start with a clean slate: AuthNotifier's constructor
@@ -90,5 +94,57 @@ void main() {
 
     expect(notifier.state.isLoggedIn, false);
     expect(notifier.state.error, isNotNull);
+  });
+
+  test('changePassword posts the current and new password payload', () async {
+    final dio = Dio();
+    final adapter = DioAdapter(dio: dio);
+    adapter.onPost(
+      changePasswordUrl,
+      (server) => server.reply(200, {'status': 'password_changed'}),
+      data: {
+        'current_password': 'OldPass2026',
+        'new_password': 'NewPass2026',
+      },
+    );
+
+    final notifier = AuthNotifier(
+      dio: dio,
+      initialState: const AuthState(isLoggedIn: true),
+    );
+    final changed = await notifier.changePassword('OldPass2026', 'NewPass2026');
+
+    expect(changed, true);
+    expect(notifier.state.error, null);
+  });
+
+  test('resetStaffPassword posts the admin reset payload', () async {
+    final dio = Dio();
+    final adapter = DioAdapter(dio: dio);
+    adapter.onPost(
+      resetPasswordUrl,
+      (server) => server.reply(200, {
+        'status': 'password_reset',
+        'email': 'worker@example.com',
+        'role': 'WORKER',
+      }),
+      data: {
+        'email': 'worker@example.com',
+        'new_password': 'ResetPass2026',
+      },
+    );
+
+    final notifier = AuthNotifier(
+      dio: dio,
+      initialState: const AuthState(
+        isLoggedIn: true,
+        user: {'role': 'ADMIN'},
+      ),
+    );
+    final reset = await notifier.resetStaffPassword(
+        'worker@example.com', 'ResetPass2026');
+
+    expect(reset, true);
+    expect(notifier.state.error, null);
   });
 }

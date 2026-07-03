@@ -1,6 +1,36 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 import 'package:invoice_capture/core/config/server_config.dart';
+import 'package:invoice_capture/features/auth/auth_provider.dart';
+import 'package:invoice_capture/features/settings/settings_screen.dart';
+
+Widget _settingsApp(AuthState authState) {
+  return ProviderScope(
+    overrides: [
+      authProvider.overrideWith(
+        (_) => AuthNotifier(initialState: authState),
+      ),
+    ],
+    child: MaterialApp.router(
+      routerConfig: GoRouter(
+        initialLocation: '/settings',
+        routes: [
+          GoRoute(
+            path: '/settings',
+            builder: (_, __) => const SettingsScreen(),
+          ),
+          GoRoute(
+            path: '/home',
+            builder: (_, __) => const Scaffold(body: Text('Home')),
+          ),
+        ],
+      ),
+    ),
+  );
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -53,7 +83,8 @@ void main() {
     expect(ServerConfig.baseUrl, ServerConfig.defaultUrl);
   });
 
-  test('load() reads back what was actually written to secure storage, '
+  test(
+      'load() reads back what was actually written to secure storage, '
       'not whatever is cached in memory', () async {
     // Persist a value. This sets the in-memory field AND writes to the
     // storage stub's backing map.
@@ -75,5 +106,24 @@ void main() {
     // value that was injected directly into the backing map.
     await ServerConfig.load();
     expect(ServerConfig.baseUrl, 'http://172.16.5.5:7000');
+  });
+
+  testWidgets('logged-in users see the change password action', (tester) async {
+    await tester.pumpWidget(_settingsApp(const AuthState(
+      isLoggedIn: true,
+      user: {'role': 'WORKER', 'email': 'worker@example.com'},
+    )));
+
+    expect(find.text('Change Password'), findsOneWidget);
+  });
+
+  testWidgets('admin users see the staff password reset action',
+      (tester) async {
+    await tester.pumpWidget(_settingsApp(const AuthState(
+      isLoggedIn: true,
+      user: {'role': 'ADMIN', 'email': 'admin@example.com'},
+    )));
+
+    expect(find.text('Reset Staff Password'), findsOneWidget);
   });
 }

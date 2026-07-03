@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"unicode"
 
 	"github.com/himanshu2394i/invoice-saas/internal/auth"
 )
@@ -95,6 +96,36 @@ type LoginRequest struct {
 	Password string `json:"password"`
 }
 
+type ChangePasswordRequest struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+}
+
+type AdminResetPasswordRequest struct {
+	Email       string `json:"email"`
+	NewPassword string `json:"new_password"`
+}
+
+func validatePilotPassword(password string) string {
+	if len([]rune(password)) < 10 {
+		return "New password must be at least 10 characters long"
+	}
+	hasLetter := false
+	hasDigit := false
+	for _, r := range password {
+		if unicode.IsLetter(r) {
+			hasLetter = true
+		}
+		if unicode.IsDigit(r) {
+			hasDigit = true
+		}
+	}
+	if !hasLetter || !hasDigit {
+		return "New password must include at least one letter and one number"
+	}
+	return ""
+}
+
 // clientIP extracts the request's IP, dropping the port. There's no reverse
 // proxy in front of this API yet -- if one is added, this must start reading
 // X-Forwarded-For instead, but only because the proxy can be trusted to set
@@ -148,5 +179,101 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			"role":            user.Role,
 			"organization_id": user.OrganizationID,
 		},
+	})
+}
+
+func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	claims := claimsFromContext(r.Context())
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "Invalid or expired token")
+		return
+	}
+
+	var req ChangePasswordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	req.CurrentPassword = strings.TrimSpace(req.CurrentPassword)
+	req.NewPassword = strings.TrimSpace(req.NewPassword)
+	if req.CurrentPassword == "" || req.NewPassword == "" {
+		writeError(w, http.StatusBadRequest, "current_password and new_password are required")
+		return
+	}
+	if msg := validatePilotPassword(req.NewPassword); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+	if req.CurrentPassword == req.NewPassword {
+		writeError(w, http.StatusBadRequest, "New password must be different from the current password")
+		return
+	}
+
+	user, err := s.Repo.GetUserByID(r.Context(), claims.OrganizationID, claims.UserID)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "Invalid or expired token")
+		return
+	}
+	if !auth.CheckPassword(user.PasswordHash, req.CurrentPassword) {
+		writeError(w, http.StatusUnauthorized, "Current password is incorrect")
+		return
+	}
+	hash, err := auth.HashPassword(req.NewPassword)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to update password")
+		return
+	}
+	if err := s.Repo.UpdateUserPassword(r.Context(), claims.OrganizationID, user.ID, hash); err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to update password")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status": "password_changed",
+	})
+}
+
+func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request) {
+	claims := claimsFromContext(r.Context())
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "Invalid or expired token")
+		return
+	}
+
+	var req AdminResetPasswordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	email := strings.TrimSpace(req.Email)
+	newPassword := strings.TrimSpace(req.NewPassword)
+	if email == "" || newPassword == "" {
+		writeError(w, http.StatusBadRequest, "email and new_password are required")
+		return
+	}
+	if msg := validatePilotPassword(newPassword); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+
+	target, err := s.Repo.GetUserByEmail(r.Context(), email)
+	if err != nil || target.OrganizationID != claims.OrganizationID {
+		writeError(w, http.StatusNotFound, "User not found")
+		return
+	}
+	hash, err := auth.HashPassword(newPassword)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to reset password")
+		return
+	}
+	if err := s.Repo.UpdateUserPassword(r.Context(), claims.OrganizationID, target.ID, hash); err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to reset password")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status": "password_reset",
+		"email":  target.Email,
+		"role":   target.Role,
 	})
 }
