@@ -1,4 +1,4 @@
-# Manual Reliability Foundation Implementation Plan
+﻿# Manual Reliability Foundation Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -221,19 +221,19 @@ puro flutter analyze
   - `limit`
   - `offset`
 
-- [ ] **Step 1: Backend search/filter tests**
+- [x] **Step 1: Backend search/filter tests**
 
 Test invoice number, buyer GSTIN/name, status, date range, and open issue filter.
 
-- [ ] **Step 2: Repository filtering**
+- [x] **Step 2: Repository filtering**
 
 Move filtering to SQL so the app can search beyond the currently loaded page.
 
-- [ ] **Step 3: Mobile query UI**
+- [x] **Step 3: Mobile query UI**
 
 Keep the simple search box, but call backend with `q`. Add filter chips for status and open issues.
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 Run backend integration test and owner invoice widget test.
 
@@ -260,11 +260,11 @@ Run backend integration test and owner invoice widget test.
   - `age_days`
   - `priority`
 
-- [ ] **Step 1: Backend filtering tests**
+- [x] **Step 1: Backend filtering tests**
 
 Create exception/dispute/overdue examples and assert type/age filters.
 
-- [ ] **Step 2: Repository query**
+- [x] **Step 2: Repository query**
 
 Calculate `age_days` in SQL from raised/due date to current date. Priority:
 
@@ -272,7 +272,7 @@ Calculate `age_days` in SQL from raised/due date to current date. Priority:
 - warning: any open exception/dispute/overdue
 - info: none for current v1
 
-- [ ] **Step 3: Mobile UI**
+- [x] **Step 3: Mobile UI**
 
 Add filter chips:
 
@@ -283,7 +283,7 @@ Add filter chips:
 
 Show age like "3 days open".
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 Run focused tests and analyze.
 
@@ -307,23 +307,23 @@ Run focused tests and analyze.
 - Role:
   - ADMIN only
 
-- [ ] **Step 1: Backend failing test**
+- [x] **Step 1: Backend failing test**
 
 Upsert requirement, delete it, list requirements, assert it is gone.
 
-- [ ] **Step 2: Repository delete**
+- [x] **Step 2: Repository delete**
 
 Delete by tenant, buyer id, and uppercased document type.
 
-- [ ] **Step 3: Handler + route**
+- [x] **Step 3: Handler + route**
 
 Return 404 when buyer does not belong to tenant. Return 200 with `{"status":"deleted"}` for idempotent deletes.
 
-- [ ] **Step 4: Mobile delete action**
+- [x] **Step 4: Mobile delete action**
 
 Add delete icon on requirement row with confirmation dialog.
 
-- [ ] **Step 5: Verify**
+- [x] **Step 5: Verify**
 
 Run backend test and mobile analyze.
 
@@ -347,7 +347,7 @@ Run backend test and mobile analyze.
 String invoiceStatusLabel(String state, {String? paymentType, bool overdue = false, double? balance})
 ```
 
-- [ ] **Step 1: Unit tests for status labels**
+- [x] **Step 1: Unit tests for status labels**
 
 Examples:
 
@@ -361,11 +361,11 @@ Examples:
 - overdue credit balance -> `Overdue`
 - fully paid -> `Paid`
 
-- [ ] **Step 2: Replace raw labels in UI**
+- [x] **Step 2: Replace raw labels in UI**
 
 Keep raw backend state available for debugging only if needed, not as the main label.
 
-- [ ] **Step 3: Verify**
+- [x] **Step 3: Verify**
 
 Run focused Flutter tests and analyze.
 
@@ -378,7 +378,7 @@ Run focused Flutter tests and analyze.
 - Modify: `task.md`
 - Modify: `docs/founder_app_walkthrough.md`
 
-- [ ] **Step 1: Run backend checks**
+- [x] **Step 1: Run backend checks**
 
 ```powershell
 cd backend
@@ -387,7 +387,7 @@ go vet ./...
 go test ./internal/api -run "TestDuplicateInvoiceCheck|TestOwnerInvoiceFilters|TestAlertFilters|TestBuyerRequirementDelete" -count=1
 ```
 
-- [ ] **Step 2: Run mobile checks**
+- [x] **Step 2: Run mobile checks**
 
 ```powershell
 cd mobile
@@ -395,6 +395,6 @@ puro flutter test test/capture/bundle_provider_test.dart test/capture/review_scr
 puro flutter analyze
 ```
 
-- [ ] **Step 3: Update docs**
+- [x] **Step 3: Update docs**
 
 Mark completed items in `task.md` and update founder walkthrough if wording changed.

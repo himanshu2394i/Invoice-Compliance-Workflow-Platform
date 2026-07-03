@@ -201,6 +201,31 @@ business documented in `invoice_extraction.md`.
   persistence/resume/discard using Hive. Verified
   `puro flutter test test/capture/bundle_provider_test.dart` passes and
   `puro flutter analyze` remains at the existing 27-issue baseline.
+
+## Phase 13 - Pilot review fixes: real OCR + manual reliability (2026-07-03)
+
+Trigger: pilot review — OCR filled nothing and the form demanded too much
+typing ("it should have taken everything on its own is the whole premise").
+
+- `[x]` **Root cause of dead OCR**: the ocr-worker container had no volume
+  mounts, so extraction activities could never read the files the api saved;
+  every extraction silently ran in simulation mode (prod AND local dev,
+  since the beginning). Fixed by sharing the storage volume + STORAGE_ROOT
+  in both compose files. Verified live: the preview endpoint now returns
+  real invoice number/GSTINs/amounts from a real photo in ~5s.
+- `[x]` Manual reliability Milestone 1 completed (plan tasks 3-6):
+  server-side owner invoice search/filters (q/status/buyer/date/open-issues),
+  alert type+age filters with age_days and critical/warning priority,
+  ADMIN delete for buyer document requirements, and staff-friendly status
+  labels (Submitted / Waiting for Manager / Paid / Open / Overdue).
+- `[x]` Confidence-driven autofill (ai-extraction-v1 thresholds, Textract as
+  the provider): per-field confidence flows worker -> Go -> mobile; >=0.90
+  fills with an AI-filled cue, 0.70-0.89 fills with a verify cue, <0.70 is
+  skipped with a plain-language warning. No OpenAI key needed for this path.
+- `[ ]` Full AI envelope provider (spec Phase 2, OpenAI/other LLM): blocked
+  on choosing a provider + API key. Textract confidence path covers capture
+  autofill in the meantime.
+- `[ ]` Sideload the new APK onto the pilot device after this deploy.
 - `[x]` Implemented second Milestone 1 slice: duplicate invoice preflight
   warning before the worker reaches supporting documents. Added
   `GET /api/v1/mobile/invoices/duplicate-check`, tenant-scoped by seller GSTIN
