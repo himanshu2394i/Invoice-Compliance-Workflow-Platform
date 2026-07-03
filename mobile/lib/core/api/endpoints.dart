@@ -9,6 +9,17 @@ class Endpoints {
   static String get ledgerUpload => '$_base/api/v1/invoices/ledger-upload';
   static String get invoiceOcrPreview =>
       '$_base/api/v1/mobile/invoice-ocr-preview';
+  static String invoiceDuplicateCheck({
+    required String invoiceNumber,
+    required String sellerGstin,
+    required String buyerGstin,
+  }) =>
+      Uri.parse('$_base/api/v1/mobile/invoices/duplicate-check')
+          .replace(queryParameters: {
+        'invoice_number': invoiceNumber,
+        'seller_gstin': sellerGstin,
+        'buyer_gstin': buyerGstin,
+      }).toString();
   static String get invoices => '$_base/api/v1/invoices';
   static String invoice(String id) => '$_base/api/v1/invoices/$id';
   static String get ownerDashboard => '$_base/api/v1/owner/dashboard';

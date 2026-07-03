@@ -70,6 +70,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 
 	// Mobile-specific endpoints — document requirement lookup and configuration
 	mux.HandleFunc("POST /api/v1/mobile/invoice-ocr-preview", requireAuth(requireRole("WORKER", "ADMIN")(s.handleInvoiceOCRPreview)))
+	mux.HandleFunc("GET /api/v1/mobile/invoices/duplicate-check", requireAuth(requireRole("WORKER", "ADMIN")(s.handleMobileDuplicateInvoiceCheck)))
 	mux.HandleFunc("GET /api/v1/mobile/buyers/requirements", requireAuth(s.handleMobileGetBuyerRequirements))
 	mux.HandleFunc("GET /api/v1/mobile/buyers/{buyer_id}/requirements", requireAuth(s.handleMobileGetBuyerRequirements))
 	mux.HandleFunc("POST /api/v1/mobile/buyers/{buyer_id}/requirements", requireAuth(requireRole("WORKER", "ADMIN")(s.handleMobileUpsertBuyerRequirement)))

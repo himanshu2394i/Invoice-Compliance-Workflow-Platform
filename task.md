@@ -127,8 +127,8 @@ than the mobile app exposes, and several rough edges in the capture flow.
 - `[x]` Add admin/manager invoice search by invoice number, buyer, GSTIN, amount, and status.
 - `[x]` Add OCR review cues on autofilled worker fields. Numeric confidence display waits on backend confidence values.
 - `[ ]` Add photo quality checks for blur, darkness, and missing document edges.
-- `[ ]` Add duplicate-invoice warning before submit.
-- `[ ]` Add capture draft recovery.
+- `[x]` Add duplicate-invoice warning before submit.
+- `[x]` Add capture draft recovery.
 - `[ ]` Add alert filters and aging for exceptions/disputes/approval work.
 - `[ ]` Add password-change/reset support before real staff rollout.
 - `[ ]` Add MFA for admin/manager users before broader pilot use.
@@ -174,3 +174,39 @@ business documented in `invoice_extraction.md`.
 - `[x]` Release APK built (`mobile/build/app/outputs/flutter-apk/app-release.apk`,
   56.8MB, defaults to the live server URL). **Still to do: sideload onto the
   pilot device.**
+
+## Phase 10 - Founder walkthrough prep (2026-07-02)
+
+- `[x]` Added `docs/founder_app_walkthrough.md`: non-technical founder demo
+  guide covering app purpose, roles, worker/owner/admin flows, storage reality
+  without S3, alerts, OCR status, working features, known gaps, and a suggested
+  presentation script.
+
+## Phase 11 - AI structured extraction design (2026-07-02)
+
+- `[x]` Added `docs/superpowers/specs/2026-07-02-ai-structured-extraction-v1-design.md`
+  for Option B: strict JSON AI extraction for invoice header/totals plus
+  supporting-document matching, explicitly excluding line items from v1.
+
+## Phase 12 - Enterprise invoice management manual-first rebuild (2026-07-02)
+
+- `[x]` Added `docs/superpowers/specs/2026-07-02-enterprise-invoice-management-manual-first-design.md`
+  defining the world-class manual invoice-management layers before OCR/AI:
+  document vault, invoice registry, capture, master data, workflow/review,
+  disputes, receivables, alerts/tasks, audit, security, reporting, and later AI.
+- `[x]` Added `docs/superpowers/plans/2026-07-02-manual-reliability-foundation.md`
+  as Milestone 1 plan: draft recovery, duplicate warning, server-side filters,
+  alert aging/filters, buyer requirement delete, and staff-friendly status labels.
+- `[x]` Implemented first Milestone 1 slice: local worker capture draft
+  persistence/resume/discard using Hive. Verified
+  `puro flutter test test/capture/bundle_provider_test.dart` passes and
+  `puro flutter analyze` remains at the existing 27-issue baseline.
+- `[x]` Implemented second Milestone 1 slice: duplicate invoice preflight
+  warning before the worker reaches supporting documents. Added
+  `GET /api/v1/mobile/invoices/duplicate-check`, tenant-scoped by seller GSTIN
+  and invoice number with optional buyer GSTIN narrowing, plus a mobile
+  confirmation dialog (`Go Back` / `Continue Anyway`). Verified
+  `go test ./internal/api -run TestDuplicateInvoiceCheck -count=1`,
+  `go build ./...`, `go vet ./...`,
+  `puro flutter test test/capture/bundle_provider_test.dart test/capture/review_screen_test.dart`,
+  and `puro flutter analyze` at the existing 27-issue baseline.

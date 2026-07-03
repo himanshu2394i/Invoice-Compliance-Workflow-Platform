@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/himanshu2394i/invoice-saas/internal/security"
@@ -135,6 +136,15 @@ type Invoice struct {
 	Beat             *string    `json:"beat,omitempty"`
 	CreatedAt        time.Time  `json:"created_at"`
 	UpdatedAt        time.Time  `json:"updated_at"`
+}
+
+type DuplicateInvoiceMatch struct {
+	ID            string    `json:"id"`
+	InvoiceNumber string    `json:"invoice_number"`
+	BuyerName     *string   `json:"buyer_name,omitempty"`
+	InvoiceDate   time.Time `json:"invoice_date"`
+	TotalAmount   float64   `json:"total_amount"`
+	Status        string    `json:"status"`
 }
 
 // Buyer is who an invoice is issued TO -- distinct from Vendor, which models
@@ -541,6 +551,30 @@ func (r *Repository) GetInvoiceByNumber(ctx context.Context, tenantID, invoiceNu
 		return nil, err
 	}
 	return &inv, nil
+}
+
+func (r *Repository) FindDuplicateInvoice(ctx context.Context, tenantID, invoiceNumber, sellerGSTIN, buyerGSTIN string) (*DuplicateInvoiceMatch, error) {
+	var match DuplicateInvoiceMatch
+	err := r.WithTx(ctx, tenantID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `
+			SELECT i.id, i.invoice_number, b.name, i.invoice_date, i.gross_amount, i.current_state
+			FROM invoices i
+			JOIN entities e ON e.id = i.entity_id
+			LEFT JOIN buyers b ON b.id = i.buyer_id
+			WHERE UPPER(i.invoice_number) = UPPER($1)
+			  AND UPPER(e.tax_identifier) = UPPER($2)
+			  AND ($3 = '' OR UPPER(COALESCE(b.gstin, '')) = UPPER($3))
+			ORDER BY i.created_at DESC
+			LIMIT 1`,
+			strings.TrimSpace(invoiceNumber),
+			strings.TrimSpace(sellerGSTIN),
+			strings.TrimSpace(buyerGSTIN),
+		).Scan(&match.ID, &match.InvoiceNumber, &match.BuyerName, &match.InvoiceDate, &match.TotalAmount, &match.Status)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &match, nil
 }
 
 // ListInvoices returns at most limit invoices, newest first, skipping the

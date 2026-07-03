@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 import '../../core/models/bundle.dart';
 import '../../core/models/buyer_requirement.dart';
+import '../../core/storage/hive_service.dart';
 
 const _uuid = Uuid();
 
@@ -42,6 +45,35 @@ class CaptureSession {
     this.isSaving = false,
     this.error,
   });
+
+  factory CaptureSession.fromBundle(QueuedBundle bundle) {
+    final invoicePages = bundle.photos.where((p) => p.isPrimary).toList()
+      ..sort((a, b) => a.pageNumber.compareTo(b.pageNumber));
+    final extraInvoicePages =
+        bundle.photos.where((p) => p.documentType == 'INVOICE_PAGE').toList()
+          ..sort((a, b) => a.pageNumber.compareTo(b.pageNumber));
+    final supporting = bundle.photos
+        .where((p) => !p.isPrimary && p.documentType != 'INVOICE_PAGE')
+        .toList();
+    return CaptureSession(
+      sessionId: bundle.localId,
+      invoicePhotoPaths: [
+        ...invoicePages.map((p) => p.localPath),
+        ...extraInvoicePages.map((p) => p.localPath),
+      ],
+      invoiceNumber: bundle.invoiceNumber,
+      entityGstin: bundle.entityGstin,
+      buyerGstin: bundle.buyerGstin,
+      buyerName: bundle.buyerName,
+      invoiceDate: bundle.invoiceDate,
+      taxableAmount: bundle.taxableAmount,
+      totalAmount: bundle.totalAmount,
+      paymentType: bundle.paymentType ?? '',
+      paymentTermsDays: bundle.paymentTermsDays,
+      buyerBranchId: bundle.buyerBranchId,
+      additionalPhotos: supporting,
+    );
+  }
 
   CaptureSession copyWith({
     List<String>? invoicePhotoPaths,
@@ -125,25 +157,47 @@ class CaptureSession {
       buyerBranchId: buyerBranchId,
     );
   }
+
+  QueuedBundle toDraftBundle() {
+    final draft = toBundle();
+    draft.status = 'draft';
+    return draft;
+  }
 }
 
 class BundleNotifier extends StateNotifier<CaptureSession> {
   BundleNotifier() : super(CaptureSession(sessionId: _uuid.v4()));
 
-  void reset() => state = CaptureSession(sessionId: _uuid.v4());
+  void reset({bool clearDraft = true}) {
+    state = CaptureSession(sessionId: _uuid.v4());
+    if (clearDraft) unawaited(HiveService.clearCaptureDraft());
+  }
 
-  void addInvoicePage(String path) => state =
-      state.copyWith(invoicePhotoPaths: [...state.invoicePhotoPaths, path]);
+  void restoreDraft(QueuedBundle draft) {
+    state = CaptureSession.fromBundle(draft);
+  }
+
+  void _persistDraft() {
+    unawaited(HiveService.saveCaptureDraft(state.toDraftBundle()));
+  }
+
+  void addInvoicePage(String path) {
+    state =
+        state.copyWith(invoicePhotoPaths: [...state.invoicePhotoPaths, path]);
+    _persistDraft();
+  }
 
   void replaceInvoicePage(int index, String path) {
     final updated = [...state.invoicePhotoPaths];
     updated[index] = path;
     state = state.copyWith(invoicePhotoPaths: updated);
+    _persistDraft();
   }
 
   void removeInvoicePage(int index) {
     final updated = [...state.invoicePhotoPaths]..removeAt(index);
     state = state.copyWith(invoicePhotoPaths: updated);
+    _persistDraft();
   }
 
   void updateInvoiceFields({
@@ -174,6 +228,7 @@ class BundleNotifier extends StateNotifier<CaptureSession> {
       buyerBranchId: buyerBranchId,
       clearBuyerBranch: clearBuyerBranch,
     );
+    _persistDraft();
   }
 
   void setRequiredDocs(List<BuyerRequirement> docs) =>
@@ -182,6 +237,7 @@ class BundleNotifier extends StateNotifier<CaptureSession> {
   void addSupportingPhoto(QueuedPhoto photo) {
     final updated = [...state.additionalPhotos, photo];
     state = state.copyWith(additionalPhotos: updated);
+    _persistDraft();
   }
 
   void setSaving(bool saving) => state = state.copyWith(isSaving: saving);

@@ -50,6 +50,37 @@ class InvoiceOCRPreview {
         buyerGstin: json['buyer_gstin'] as String?,
         taxableAmount: (json['taxable_amount'] as num?)?.toDouble(),
         grossAmount: (json['gross_amount'] as num?)?.toDouble(),
+  );
+}
+
+class InvoiceDuplicateCheck {
+  final bool duplicate;
+  final String? invoiceId;
+  final String? invoiceNumber;
+  final String? buyerName;
+  final String? invoiceDate;
+  final double? totalAmount;
+  final String? status;
+
+  const InvoiceDuplicateCheck({
+    required this.duplicate,
+    this.invoiceId,
+    this.invoiceNumber,
+    this.buyerName,
+    this.invoiceDate,
+    this.totalAmount,
+    this.status,
+  });
+
+  factory InvoiceDuplicateCheck.fromJson(Map<String, dynamic> json) =>
+      InvoiceDuplicateCheck(
+        duplicate: json['duplicate'] == true,
+        invoiceId: json['invoice_id'] as String?,
+        invoiceNumber: json['invoice_number'] as String?,
+        buyerName: json['buyer_name'] as String?,
+        invoiceDate: json['invoice_date'] as String?,
+        totalAmount: (json['total_amount'] as num?)?.toDouble(),
+        status: json['status'] as String?,
       );
 }
 
@@ -65,6 +96,24 @@ Future<InvoiceOCRPreview> fetchInvoiceOCRPreview(Dio dio, String path) async {
     }),
   );
   return InvoiceOCRPreview.fromJson(resp.data as Map<String, dynamic>? ?? {});
+}
+
+Future<InvoiceDuplicateCheck> fetchInvoiceDuplicateCheck(
+  Dio dio, {
+  required String invoiceNumber,
+  required String sellerGstin,
+  required String buyerGstin,
+}) async {
+  final resp = await dio.get(
+    Endpoints.invoiceDuplicateCheck(
+      invoiceNumber: invoiceNumber,
+      sellerGstin: sellerGstin,
+      buyerGstin: buyerGstin,
+    ),
+  );
+  return InvoiceDuplicateCheck.fromJson(
+    resp.data as Map<String, dynamic>? ?? {},
+  );
 }
 
 class ReviewScreen extends ConsumerStatefulWidget {
@@ -93,6 +142,7 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
 
   bool _lookingUpBuyer = false;
   bool _lookingUpOcr = false;
+  bool _checkingDuplicate = false;
   bool _ocrAttempted = false;
   String? _ocrStatus;
   String? _ocrWarning;
@@ -110,15 +160,43 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
   @override
   void initState() {
     super.initState();
-    final today = DateTime.now();
-    _invDateCtrl.text =
-        '${today.year.toString().padLeft(4, '0')}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
+    _hydrateFromSession();
     _loadBuyers();
     _loadSeriesRegistry();
     _invNumCtrl.addListener(_detectSeriesFromNumber);
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_buyerGstinCtrl.text.trim().length == 15) {
+        _lookupBuyer();
+      }
       _runOCRPreviewIfPossible();
     });
+  }
+
+  void _hydrateFromSession() {
+    final session = ref.read(bundleProvider);
+    final today = DateTime.now();
+    final todayText =
+        '${today.year.toString().padLeft(4, '0')}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
+    _invNumCtrl.text = session.invoiceNumber;
+    _buyerGstinCtrl.text = session.buyerGstin;
+    _buyerNameCtrl.text = session.buyerName;
+    _invDateCtrl.text =
+        session.invoiceDate.trim().isEmpty ? todayText : session.invoiceDate;
+    _taxableCtrl.text = session.taxableAmount == 0
+        ? ''
+        : session.taxableAmount.toStringAsFixed(2);
+    _totalCtrl.text =
+        session.totalAmount == 0 ? '' : session.totalAmount.toStringAsFixed(2);
+    if (_entities.any((e) => e.$2 == session.entityGstin)) {
+      _entityGstin = session.entityGstin;
+    }
+    if (session.paymentType == 'CASH' || session.paymentType == 'CREDIT') {
+      _paymentType = session.paymentType;
+    }
+    if (session.paymentTermsDays != null) {
+      _termsCtrl.text = session.paymentTermsDays.toString();
+    }
+    _selectedBranchId = session.buyerBranchId;
   }
 
   Future<void> _loadSeriesRegistry() async {
@@ -174,7 +252,16 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
       final list = (resp.data['buyers'] as List? ?? [])
           .map((b) => Buyer.fromJson(b as Map<String, dynamic>))
           .toList();
-      if (mounted) setState(() => _buyers = list);
+      if (mounted) {
+        setState(() => _buyers = list);
+        final sessionBuyerGstin = ref.read(bundleProvider).buyerGstin;
+        final match = list
+            .where((b) => b.gstin.toUpperCase() == sessionBuyerGstin.toUpperCase())
+            .toList();
+        if (match.isNotEmpty) {
+          _loadBuyerBranches(match.first.id);
+        }
+      }
     } catch (_) {
       // Non-fatal: worker can still type the GSTIN manually below
     }
@@ -189,6 +276,7 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
       _termsCtrl.text = buyer.defaultPaymentTermsDays.toString();
     }
     _loadBuyerBranches(buyer.id);
+    _persistDraftFields();
     _lookupBuyer();
   }
 
@@ -273,6 +361,7 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
               : 'OCR filled ${filled.join(', ')}. Verify before continuing.';
           _ocrFilledFields = filledFields;
         });
+        _persistDraftFields();
       }
     } catch (_) {
       if (mounted) {
@@ -320,9 +409,7 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
     }
   }
 
-  void _proceed() {
-    if (!_formKey.currentState!.validate()) return;
-    if (ref.read(bundleProvider).invoicePhotoPaths.isEmpty) return;
+  void _persistDraftFields() {
     final terms = int.tryParse(_termsCtrl.text.trim());
     ref.read(bundleProvider.notifier).updateInvoiceFields(
           invoiceNumber: _invNumCtrl.text.trim(),
@@ -338,6 +425,67 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
           buyerBranchId: _selectedBranchId,
           clearBuyerBranch: _selectedBranchId == null,
         );
+  }
+
+  Future<bool> _confirmDuplicateInvoice(InvoiceDuplicateCheck duplicate) async {
+    final details = <String>[
+      if (duplicate.buyerName != null && duplicate.buyerName!.isNotEmpty)
+        duplicate.buyerName!,
+      if (duplicate.invoiceDate != null && duplicate.invoiceDate!.isNotEmpty)
+        duplicate.invoiceDate!,
+      if (duplicate.totalAmount != null)
+        'Rs ${duplicate.totalAmount!.toStringAsFixed(2)}',
+      if (duplicate.status != null && duplicate.status!.isNotEmpty)
+        duplicate.status!,
+    ];
+    return await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Possible duplicate invoice'),
+            content: Text(
+              [
+                'This invoice number already exists. Continue only if this is a correction or extra document.',
+                if (details.isNotEmpty) details.join(' • '),
+              ].join('\n\n'),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('Go Back'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(context).pop(true),
+                child: const Text('Continue Anyway'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+  }
+
+  Future<void> _proceed() async {
+    if (!_formKey.currentState!.validate()) return;
+    if (ref.read(bundleProvider).invoicePhotoPaths.isEmpty) return;
+    _persistDraftFields();
+    setState(() => _checkingDuplicate = true);
+    var shouldContinue = true;
+    InvoiceDuplicateCheck? duplicate;
+    try {
+      duplicate = await fetchInvoiceDuplicateCheck(
+        ref.read(reviewDioProvider),
+        invoiceNumber: _invNumCtrl.text.trim(),
+        sellerGstin: _entityGstin,
+        buyerGstin: _buyerGstinCtrl.text.trim().toUpperCase(),
+      );
+    } catch (_) {
+      shouldContinue = true;
+    } finally {
+      if (mounted) setState(() => _checkingDuplicate = false);
+    }
+    if (duplicate != null && duplicate.duplicate && mounted) {
+      shouldContinue = await _confirmDuplicateInvoice(duplicate);
+    }
+    if (!mounted || !shouldContinue) return;
     context.go('/capture/checklist');
   }
 
@@ -375,6 +523,7 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
             _ocrFilledFields = {..._ocrFilledFields}..remove(ocrFieldKey);
           });
         }
+        _persistDraftFields();
       },
       validator:
           validator ?? (v) => (v == null || v.isEmpty) ? 'Required' : null,
@@ -582,7 +731,10 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
                                 child: Text(e.$1),
                               ))
                           .toList(),
-                      onChanged: (v) => setState(() => _entityGstin = v!),
+                      onChanged: (v) {
+                        setState(() => _entityGstin = v!);
+                        _persistDraftFields();
+                      },
                     ),
                     const SizedBox(height: 12),
 
@@ -704,8 +856,10 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
                                   : '${b.name} (${b.code})'),
                             ),
                         ],
-                        onChanged: (v) =>
-                            setState(() => _selectedBranchId = v),
+                        onChanged: (v) {
+                          setState(() => _selectedBranchId = v);
+                          _persistDraftFields();
+                        },
                       ),
                       const SizedBox(height: 12),
                     ],
@@ -723,8 +877,10 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
                                   value: 'CREDIT', label: Text('Credit')),
                             ],
                             selected: {_paymentType},
-                            onSelectionChanged: (s) =>
-                                setState(() => _paymentType = s.first),
+                            onSelectionChanged: (s) {
+                              setState(() => _paymentType = s.first);
+                              _persistDraftFields();
+                            },
                             showSelectedIcon: false,
                           ),
                         ),
@@ -738,6 +894,7 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
                                 labelText: 'Terms (days)',
                                 border: OutlineInputBorder(),
                               ),
+                              onChanged: (_) => _persistDraftFields(),
                               validator: (v) {
                                 if (_paymentType != 'CREDIT') return null;
                                 if (v == null || v.trim().isEmpty) {
@@ -818,9 +975,19 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
                     SizedBox(
                       width: double.infinity,
                       child: FilledButton.icon(
-                        onPressed: _proceed,
-                        icon: const Icon(Icons.arrow_forward),
-                        label: const Text('Next — Supporting Docs'),
+                        onPressed: _checkingDuplicate ? null : _proceed,
+                        icon: _checkingDuplicate
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.arrow_forward),
+                        label: Text(_checkingDuplicate
+                            ? 'Checking invoice...'
+                            : 'Next — Supporting Docs'),
                         style: FilledButton.styleFrom(
                           padding: const EdgeInsets.symmetric(vertical: 16),
                         ),

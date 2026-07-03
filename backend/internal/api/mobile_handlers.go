@@ -4,11 +4,54 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/himanshu2394i/invoice-saas/internal/db"
+	"github.com/jackc/pgx/v5"
 )
+
+func (s *Server) handleMobileDuplicateInvoiceCheck(w http.ResponseWriter, r *http.Request) {
+	tenantID := claimsFromContext(r.Context()).OrganizationID
+	invoiceNumber := strings.TrimSpace(r.URL.Query().Get("invoice_number"))
+	sellerGSTIN := strings.TrimSpace(r.URL.Query().Get("seller_gstin"))
+	buyerGSTIN := strings.TrimSpace(r.URL.Query().Get("buyer_gstin"))
+
+	if invoiceNumber == "" {
+		writeError(w, http.StatusBadRequest, "invoice_number is required")
+		return
+	}
+	if sellerGSTIN == "" {
+		writeError(w, http.StatusBadRequest, "seller_gstin is required")
+		return
+	}
+
+	match, err := s.Repo.FindDuplicateInvoice(r.Context(), tenantID, invoiceNumber, sellerGSTIN, buyerGSTIN)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeJSON(w, http.StatusOK, map[string]bool{"duplicate": false})
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to check duplicate invoice: "+err.Error())
+		return
+	}
+
+	buyerName := ""
+	if match.BuyerName != nil {
+		buyerName = *match.BuyerName
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"duplicate":      true,
+		"invoice_id":     match.ID,
+		"invoice_number": match.InvoiceNumber,
+		"buyer_name":     buyerName,
+		"invoice_date":   match.InvoiceDate.Format(time.DateOnly),
+		"total_amount":   match.TotalAmount,
+		"status":         match.Status,
+	})
+}
 
 // handleMobileGetBuyerRequirements returns the list of supporting documents a
 // worker must photograph for a given buyer. Accepts either:

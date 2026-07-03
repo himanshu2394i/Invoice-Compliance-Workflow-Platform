@@ -8,14 +8,20 @@ import '../capture/camera_screen.dart';
 
 /// Worker shell's Capture tab root. Queue and My Invoices live on their own
 /// tabs; back-navigation and exit handling belong to the shell.
-class HomeScreen extends ConsumerWidget {
+class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends ConsumerState<HomeScreen> {
+  @override
+  Widget build(BuildContext context) {
     final user = ref.watch(currentUserProvider);
     final pending =
         HiveService.allBundles().where((b) => b.status != 'synced').length;
+    final draft = HiveService.loadCaptureDraft();
 
     return Scaffold(
       appBar: AppBar(
@@ -68,6 +74,30 @@ class HomeScreen extends ConsumerWidget {
                     ),
               ),
               const SizedBox(height: 48),
+              if (draft != null) ...[
+                FilledButton.icon(
+                  onPressed: () {
+                    ref.read(bundleProvider.notifier).restoreDraft(draft);
+                    context.push('/capture/review');
+                  },
+                  icon: const Icon(Icons.restore_page_outlined, size: 24),
+                  label: const Text('Resume Draft',
+                      style: TextStyle(fontSize: 18)),
+                  style: FilledButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 18),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                OutlinedButton.icon(
+                  onPressed: () async {
+                    await HiveService.clearCaptureDraft();
+                    if (mounted) setState(() {});
+                  },
+                  icon: const Icon(Icons.delete_outline),
+                  label: const Text('Discard Draft'),
+                ),
+                const SizedBox(height: 24),
+              ],
               FilledButton.icon(
                 onPressed: () {
                   // Reset any previous session

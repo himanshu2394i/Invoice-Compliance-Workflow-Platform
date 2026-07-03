@@ -1,3 +1,4 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -84,6 +85,28 @@ Future<void> _tapNext(WidgetTester tester) async {
   await tester.pumpAndSettle();
 }
 
+Dio _reviewDioWithDuplicateResponse(Map<String, dynamic> response) {
+  final dio = Dio();
+  dio.interceptors.add(InterceptorsWrapper(
+    onRequest: (options, handler) {
+      if (options.uri.path.endsWith('/api/v1/mobile/invoices/duplicate-check')) {
+        handler.resolve(Response(
+          requestOptions: options,
+          statusCode: 200,
+          data: response,
+        ));
+        return;
+      }
+      handler.reject(DioException(
+        requestOptions: options,
+        type: DioExceptionType.cancel,
+        error: 'unmocked review request',
+      ));
+    },
+  ));
+  return dio;
+}
+
 void main() {
   testWidgets(
       'blocks submission and shows "Required" errors when fields are empty',
@@ -167,7 +190,14 @@ void main() {
   testWidgets(
       'valid input saves the parsed fields to bundleProvider and advances to the checklist',
       (tester) async {
-    final container = await _pumpReview(tester);
+    final container = await _pumpReview(
+      tester,
+      overrides: [
+        reviewDioProvider.overrideWithValue(
+          _reviewDioWithDuplicateResponse({'duplicate': false}),
+        ),
+      ],
+    );
 
     await _fillValidForm(tester);
     await _tapNext(tester);
@@ -192,7 +222,14 @@ void main() {
 
   testWidgets('selecting Credit reveals terms and carries them to the bundle',
       (tester) async {
-    final container = await _pumpReview(tester);
+    final container = await _pumpReview(
+      tester,
+      overrides: [
+        reviewDioProvider.overrideWithValue(
+          _reviewDioWithDuplicateResponse({'duplicate': false}),
+        ),
+      ],
+    );
 
     // Terms field is hidden while Cash is selected.
     expect(find.text('Terms (days)'), findsNothing);
@@ -219,6 +256,39 @@ void main() {
     final session = container.read(bundleProvider);
     expect(session.paymentType, 'CREDIT');
     expect(session.paymentTermsDays, 30);
+    expect(find.text('Checklist'), findsOneWidget);
+  });
+
+  testWidgets('duplicate invoice check warns before moving to checklist',
+      (tester) async {
+    final dio = _reviewDioWithDuplicateResponse({
+      'duplicate': true,
+      'invoice_id': 'invoice-1',
+      'invoice_number': 'A26/001',
+      'buyer_name': 'Vishal Mega Mart',
+      'invoice_date': '2026-06-09',
+      'total_amount': 10913.00,
+      'status': 'ARCHIVED',
+    });
+
+    await _pumpReview(
+      tester,
+      overrides: [reviewDioProvider.overrideWithValue(dio)],
+    );
+    await _fillValidForm(tester);
+    await _tapNext(tester);
+
+    expect(
+      find.textContaining(
+        'This invoice number already exists. Continue only if this is a correction or extra document.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('Checklist'), findsNothing);
+
+    await tester.tap(find.text('Continue Anyway'));
+    await tester.pumpAndSettle();
+
     expect(find.text('Checklist'), findsOneWidget);
   });
 }
