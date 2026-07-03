@@ -52,6 +52,14 @@ services:
       # No AWS access keys here on purpose -- boto3 picks up credentials from
       # the EC2 instance's IAM role automatically via the metadata service.
       - AWS_REGION=ap-south-1
+      # Must match the api service's STORAGE_ROOT: the extraction activities
+      # read the exact files the api saved. Without this shared volume the
+      # worker's os.path.exists() check fails for every document and ALL
+      # extraction silently degrades to simulation mode (the pilot's
+      # "OCR filled nothing" bug — see task.md phase 10).
+      - STORAGE_ROOT=/data/storage
+    volumes:
+      - storage_data:/data/storage
     depends_on:
       - temporal
     restart: unless-stopped

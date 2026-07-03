@@ -40,6 +40,12 @@ services:
       context: ./backend/python_worker
     environment:
       - TEMPORAL_HOST=temporal:7233
+      # The host-run API (go run cmd/api from backend/) writes uploads to
+      # backend/storage; the extraction activities must read those same
+      # files or every extraction silently falls back to simulation mode.
+      - STORAGE_ROOT=/data/storage
+    volumes:
+      - ./backend/storage:/data/storage
     depends_on:
       - temporal
     restart: on-failure
