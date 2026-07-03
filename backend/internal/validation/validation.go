@@ -16,6 +16,11 @@ type InvoiceData struct {
 	TaxAmount     float64
 	Simulated     bool
 	Inconclusive  bool
+	// Per-field extraction confidence (0..1) keyed by API field name
+	// (invoice_number, gross_amount, taxable_amount, tax_amount,
+	// seller_gstin, buyer_gstin). Nil/empty when the extractor predates
+	// confidence reporting; missing keys mean low confidence.
+	Confidence map[string]float64
 }
 
 type ExpectedInvoice struct {

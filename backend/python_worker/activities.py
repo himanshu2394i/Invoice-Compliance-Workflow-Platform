@@ -83,16 +83,21 @@ def _extract_via_textract(image_path: str):
         return None
 
     summary_fields = {}
+    summary_confidence = {}  # Textract TYPE -> 0..1 value-detection confidence
     label_value_pairs = []
     for doc in response.get("ExpenseDocuments", []):
         for field in doc.get("SummaryFields", []):
+            value_detection = field.get("ValueDetection", {})
             field_type = field.get("Type", {}).get("Text")
-            value_text = field.get("ValueDetection", {}).get("Text")
+            value_text = value_detection.get("Text")
+            value_conf = value_detection.get("Confidence")
             if field_type and value_text:
                 summary_fields[field_type] = value_text
+                if value_conf is not None:
+                    summary_confidence[field_type] = round(value_conf / 100.0, 4)
             label_text = field.get("LabelDetection", {}).get("Text")
             if label_text and value_text:
-                label_value_pairs.append(f"{label_text} {value_text}")
+                label_value_pairs.append((f"{label_text} {value_text}", value_conf))
 
     gross = _parse_amount(summary_fields.get("TOTAL"))
     if gross is None:
@@ -101,16 +106,29 @@ def _extract_via_textract(image_path: str):
         return None
     tax = _parse_amount(summary_fields.get("TAX")) or 0.0
     net = _parse_amount(summary_fields.get("SUBTOTAL"))
+    net_derived = net is None
     if net is None:
         net = gross - tax
 
     # GSTIN has no dedicated Textract field type -- search the generic
     # label/value pairs Textract still recognized but couldn't classify.
+    # Keep each match's source-field confidence so the app can decide
+    # whether to autofill it.
     gstins = []
-    for text in label_value_pairs:
+    gstin_confidence = []
+    for text, conf in label_value_pairs:
         for match in GSTIN_REGEX.finditer(text.upper()):
             if match.group(0) not in gstins:
                 gstins.append(match.group(0))
+                gstin_confidence.append(round((conf or 0.0) / 100.0, 4))
+
+    gross_conf = summary_confidence.get("TOTAL", 0.0)
+    tax_conf = summary_confidence.get("TAX", 0.0)
+    if net_derived:
+        # net = gross - tax is only as trustworthy as its weakest input.
+        net_conf = round(min(gross_conf, tax_conf) if tax > 0 else gross_conf, 4)
+    else:
+        net_conf = summary_confidence.get("SUBTOTAL", 0.0)
 
     return {
         "InvoiceNumber": summary_fields.get("INVOICE_RECEIPT_ID", "") or "",
@@ -121,6 +139,17 @@ def _extract_via_textract(image_path: str):
         "BuyerGSTIN": gstins[1] if len(gstins) > 1 else "",
         "Simulated": False,
         "Inconclusive": False,
+        # Per-field confidence (0..1) keyed by the mobile/API field names, so
+        # the app can fill high-confidence fields, cue medium ones for
+        # verification, and skip low ones (ai-structured-extraction-v1 spec).
+        "Confidence": {
+            "invoice_number": summary_confidence.get("INVOICE_RECEIPT_ID", 0.0),
+            "gross_amount": gross_conf,
+            "tax_amount": tax_conf,
+            "taxable_amount": net_conf,
+            "seller_gstin": gstin_confidence[0] if gstin_confidence else 0.0,
+            "buyer_gstin": gstin_confidence[1] if len(gstin_confidence) > 1 else 0.0,
+        },
     }
 
 def _extract_header_via_textract(image_path: str):

@@ -156,21 +156,34 @@ func (s *Server) startInvoiceOCRPreviewWorkflow(ctx context.Context, tenantID, s
 }
 
 type InvoiceOCRPreviewResponse struct {
-	OCRAvailable  bool    `json:"ocr_available"`
-	TimedOut      bool    `json:"timed_out"`
-	Error         string  `json:"error,omitempty"`
-	InvoiceNumber string  `json:"invoice_number,omitempty"`
-	SellerGSTIN   string  `json:"seller_gstin,omitempty"`
-	BuyerGSTIN    string  `json:"buyer_gstin,omitempty"`
-	GrossAmount   float64 `json:"gross_amount,omitempty"`
-	TaxableAmount float64 `json:"taxable_amount,omitempty"`
-	TaxAmount     float64 `json:"tax_amount,omitempty"`
-	Simulated     bool    `json:"simulated,omitempty"`
-	Inconclusive  bool    `json:"inconclusive,omitempty"`
+	OCRAvailable  bool               `json:"ocr_available"`
+	TimedOut      bool               `json:"timed_out"`
+	Error         string             `json:"error,omitempty"`
+	InvoiceNumber string             `json:"invoice_number,omitempty"`
+	SellerGSTIN   string             `json:"seller_gstin,omitempty"`
+	BuyerGSTIN    string             `json:"buyer_gstin,omitempty"`
+	GrossAmount   float64            `json:"gross_amount,omitempty"`
+	TaxableAmount float64            `json:"taxable_amount,omitempty"`
+	TaxAmount     float64            `json:"tax_amount,omitempty"`
+	Simulated     bool               `json:"simulated,omitempty"`
+	Inconclusive  bool               `json:"inconclusive,omitempty"`
+	Confidence    map[string]float64 `json:"confidence,omitempty"`
+	Warnings      []string           `json:"warnings,omitempty"`
+}
+
+// previewFieldLabels maps confidence keys to the plain-language wording the
+// worker sees when a field couldn't be read clearly.
+var previewFieldLabels = map[string]string{
+	"invoice_number": "invoice number",
+	"seller_gstin":   "seller GSTIN",
+	"buyer_gstin":    "buyer GSTIN",
+	"taxable_amount": "taxable amount",
+	"tax_amount":     "tax amount",
+	"gross_amount":   "total amount",
 }
 
 func previewResponseFromInvoiceData(data validation.InvoiceData) InvoiceOCRPreviewResponse {
-	return InvoiceOCRPreviewResponse{
+	resp := InvoiceOCRPreviewResponse{
 		OCRAvailable:  !data.Simulated && !data.Inconclusive,
 		InvoiceNumber: strings.TrimSpace(data.InvoiceNumber),
 		SellerGSTIN:   strings.TrimSpace(data.VendorGSTIN),
@@ -181,6 +194,38 @@ func previewResponseFromInvoiceData(data validation.InvoiceData) InvoiceOCRPrevi
 		Simulated:     data.Simulated,
 		Inconclusive:  data.Inconclusive,
 	}
+	if resp.OCRAvailable && len(data.Confidence) > 0 {
+		resp.Confidence = data.Confidence
+		// Warn about important fields that were extracted but read too
+		// poorly to autofill (< 0.70 per the ai-extraction-v1 thresholds).
+		for _, key := range []string{"invoice_number", "seller_gstin", "buyer_gstin", "taxable_amount", "tax_amount", "gross_amount"} {
+			if hasPreviewValue(resp, key) && data.Confidence[key] < 0.70 {
+				resp.Warnings = append(resp.Warnings,
+					"AI could not read the "+previewFieldLabels[key]+" clearly - please verify it.")
+			}
+		}
+	}
+	return resp
+}
+
+// hasPreviewValue reports whether the extraction produced a value for the
+// given confidence key — warnings only make sense for fields that exist.
+func hasPreviewValue(resp InvoiceOCRPreviewResponse, key string) bool {
+	switch key {
+	case "invoice_number":
+		return resp.InvoiceNumber != ""
+	case "seller_gstin":
+		return resp.SellerGSTIN != ""
+	case "buyer_gstin":
+		return resp.BuyerGSTIN != ""
+	case "taxable_amount":
+		return resp.TaxableAmount > 0
+	case "tax_amount":
+		return resp.TaxAmount > 0
+	case "gross_amount":
+		return resp.GrossAmount > 0
+	}
+	return false
 }
 
 func (s *Server) handleInvoiceOCRPreview(w http.ResponseWriter, r *http.Request) {

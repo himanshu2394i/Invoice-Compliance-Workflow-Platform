@@ -19,9 +19,17 @@ final ocrPreviewProvider = Provider<Future<InvoiceOCRPreview> Function(String)>(
   },
 );
 
-const ocrFilledHelperText = 'Filled by OCR - verify';
+const ocrFilledHelperText = 'AI filled - verify';
+const ocrHighConfidenceHelperText = 'AI filled';
 
-String? ocrFieldHelperText(Set<String> ocrFilledFields, String fieldKey) {
+String? ocrFieldHelperText(
+  Set<String> ocrFilledFields,
+  String fieldKey, {
+  Set<String> highConfidenceFields = const {},
+}) {
+  if (highConfidenceFields.contains(fieldKey)) {
+    return ocrHighConfidenceHelperText;
+  }
   return ocrFilledFields.contains(fieldKey) ? ocrFilledHelperText : null;
 }
 
@@ -33,6 +41,11 @@ class InvoiceOCRPreview {
   final double? taxableAmount;
   final double? grossAmount;
 
+  /// Per-field extraction confidence (0..1). Empty when the server predates
+  /// confidence reporting — treat that as "fill with a verify cue".
+  final Map<String, double> confidence;
+  final List<String> warnings;
+
   const InvoiceOCRPreview({
     required this.ocrAvailable,
     this.invoiceNumber,
@@ -40,7 +53,18 @@ class InvoiceOCRPreview {
     this.buyerGstin,
     this.taxableAmount,
     this.grossAmount,
+    this.confidence = const {},
+    this.warnings = const [],
   });
+
+  /// Autofill decision per the ai-extraction-v1 thresholds: >=0.90 fill,
+  /// 0.70-0.89 fill with a verify cue, <0.70 don't fill. No confidence data
+  /// at all keeps legacy fill-with-verify behavior.
+  bool shouldFill(String fieldKey) =>
+      confidence.isEmpty || (confidence[fieldKey] ?? 0) >= 0.70;
+
+  bool isHighConfidence(String fieldKey) =>
+      confidence.isNotEmpty && (confidence[fieldKey] ?? 0) >= 0.90;
 
   factory InvoiceOCRPreview.fromJson(Map<String, dynamic> json) =>
       InvoiceOCRPreview(
@@ -50,6 +74,11 @@ class InvoiceOCRPreview {
         buyerGstin: json['buyer_gstin'] as String?,
         taxableAmount: (json['taxable_amount'] as num?)?.toDouble(),
         grossAmount: (json['gross_amount'] as num?)?.toDouble(),
+        confidence: ((json['confidence'] as Map?) ?? const {}).map(
+            (k, v) => MapEntry(k.toString(), (v as num?)?.toDouble() ?? 0)),
+        warnings: ((json['warnings'] as List?) ?? const [])
+            .map((w) => w.toString())
+            .toList(),
   );
 }
 
@@ -147,6 +176,7 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
   String? _ocrStatus;
   String? _ocrWarning;
   Set<String> _ocrFilledFields = {};
+  Set<String> _ocrHighConfidenceFields = {};
   List<Buyer> _buyers = [];
 
   // Distributor-domain capture fields
@@ -291,6 +321,7 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
       _ocrStatus = 'Reading invoice photo...';
       _ocrWarning = null;
       _ocrFilledFields = {};
+      _ocrHighConfidenceFields = {};
     });
     try {
       final data = await ref.read(ocrPreviewProvider)(pagePaths.first);
@@ -300,13 +331,16 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
             _ocrStatus = null;
             _ocrWarning = null;
             _ocrFilledFields = {};
+            _ocrHighConfidenceFields = {};
           });
         }
         return;
       }
 
       final filled = <String>[];
+      final skippedLowConfidence = <String>[];
       final filledFields = <String>{};
+      final highConfidenceFields = <String>{};
       void fillIfEmpty(
         TextEditingController ctrl,
         Object? value,
@@ -315,9 +349,17 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
       ) {
         final text = value?.toString().trim() ?? '';
         if (text.isEmpty || ctrl.text.trim().isNotEmpty) return;
+        if (!data.shouldFill(fieldKey)) {
+          skippedLowConfidence.add(label);
+          return;
+        }
         ctrl.text = text;
         filled.add(label);
-        filledFields.add(fieldKey);
+        if (data.isHighConfidence(fieldKey)) {
+          highConfidenceFields.add(fieldKey);
+        } else {
+          filledFields.add(fieldKey);
+        }
       }
 
       fillIfEmpty(
@@ -327,7 +369,9 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
         'invoice number',
       );
       final sellerGSTIN = data.sellerGstin?.trim();
-      if (sellerGSTIN != null && sellerGSTIN.isNotEmpty) {
+      if (sellerGSTIN != null &&
+          sellerGSTIN.isNotEmpty &&
+          data.shouldFill('seller_gstin')) {
         final match = _entities.where((e) => e.$2 == sellerGSTIN).toList();
         if (match.isNotEmpty) _entityGstin = match.first.$2;
       }
@@ -335,31 +379,43 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
       final existingBuyerGSTIN = _buyerGstinCtrl.text.trim();
       if (extractedBuyerGSTIN != null && extractedBuyerGSTIN.isNotEmpty) {
         if (existingBuyerGSTIN.isEmpty) {
-          _buyerGstinCtrl.text = extractedBuyerGSTIN.toUpperCase();
-          filled.add('buyer GSTIN');
-          filledFields.add('buyer_gstin');
-          await _lookupBuyer();
+          if (data.shouldFill('buyer_gstin')) {
+            _buyerGstinCtrl.text = extractedBuyerGSTIN.toUpperCase();
+            filled.add('buyer GSTIN');
+            if (data.isHighConfidence('buyer_gstin')) {
+              highConfidenceFields.add('buyer_gstin');
+            } else {
+              filledFields.add('buyer_gstin');
+            }
+            await _lookupBuyer();
+          } else {
+            skippedLowConfidence.add('buyer GSTIN');
+          }
         } else if (existingBuyerGSTIN.toUpperCase() !=
             extractedBuyerGSTIN.toUpperCase()) {
           _ocrWarning = 'Buyer GSTIN from photo differs. Check the invoice.';
         }
       }
       if (_taxableCtrl.text.trim().isEmpty && data.taxableAmount != null) {
-        _taxableCtrl.text = data.taxableAmount!.toStringAsFixed(2);
-        filled.add('taxable amount');
-        filledFields.add('taxable_amount');
+        fillIfEmpty(_taxableCtrl, data.taxableAmount!.toStringAsFixed(2),
+            'taxable_amount', 'taxable amount');
       }
       if (_totalCtrl.text.trim().isEmpty && data.grossAmount != null) {
-        _totalCtrl.text = data.grossAmount!.toStringAsFixed(2);
-        filled.add('total amount');
-        filledFields.add('gross_amount');
+        fillIfEmpty(_totalCtrl, data.grossAmount!.toStringAsFixed(2),
+            'gross_amount', 'total amount');
       }
       if (mounted) {
         setState(() {
-          _ocrStatus = filled.isEmpty
-              ? null
-              : 'OCR filled ${filled.join(', ')}. Verify before continuing.';
+          final parts = <String>[
+            if (filled.isNotEmpty)
+              'AI filled ${filled.join(', ')}. Verify before continuing.',
+            if (skippedLowConfidence.isNotEmpty)
+              'Could not read ${skippedLowConfidence.join(', ')} clearly - please type them.',
+            ...data.warnings,
+          ];
+          _ocrStatus = parts.isEmpty ? null : parts.join('\n');
           _ocrFilledFields = filledFields;
+          _ocrHighConfidenceFields = highConfidenceFields;
         });
         _persistDraftFields();
       }
@@ -369,6 +425,7 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
           _ocrStatus = null;
           _ocrWarning = null;
           _ocrFilledFields = {};
+          _ocrHighConfidenceFields = {};
         });
       }
     } finally {
@@ -501,7 +558,8 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
   }) {
     final helperText = ocrFieldKey == null
         ? null
-        : ocrFieldHelperText(_ocrFilledFields, ocrFieldKey);
+        : ocrFieldHelperText(_ocrFilledFields, ocrFieldKey,
+            highConfidenceFields: _ocrHighConfidenceFields);
     return TextFormField(
       controller: ctrl,
       decoration: InputDecoration(
