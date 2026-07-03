@@ -1506,30 +1506,88 @@ type OwnerInvoiceRow struct {
 	OpenExceptions int       `json:"open_exceptions"`
 	OpenDisputes   int       `json:"open_disputes"`
 	DocumentCount  int       `json:"document_count"`
+	// Distributor-domain fields so list/detail rows can show payment status
+	// (Open/Paid/Overdue) without a second request. gross_amount is the bill
+	// total; PaidAmount sums invoice_payments.
+	PaymentType *string    `json:"payment_type,omitempty"`
+	DueDate     *time.Time `json:"due_date,omitempty"`
+	PaidAmount  float64    `json:"paid_amount"`
 }
 
-func (r *Repository) ListInvoicesForOwner(ctx context.Context, tenantID string, limit, offset int) ([]*OwnerInvoiceRow, error) {
+// OwnerInvoiceFilter narrows the owner invoice list server-side, so search
+// works across the whole ledger rather than only the page the app already
+// loaded. Zero values mean "no filter".
+type OwnerInvoiceFilter struct {
+	Query         string // ILIKE match on invoice number, buyer name, buyer GSTIN
+	Status        string // exact current_state
+	BuyerID       string
+	From          *time.Time // invoice_date >=
+	To            *time.Time // invoice_date <=
+	HasOpenIssues *bool      // true: only invoices with open exceptions/disputes; false: only without
+	Limit         int
+	Offset        int
+}
+
+func (r *Repository) ListInvoicesForOwner(ctx context.Context, tenantID string, f OwnerInvoiceFilter) ([]*OwnerInvoiceRow, error) {
+	query := `
+		SELECT i.id, i.invoice_number, i.invoice_date, i.gross_amount, i.tax_amount,
+		       i.current_state, i.created_at,
+		       b.name, b.gstin, e.legal_name,
+		       COALESCE(exc.cnt,0)::int, COALESCE(disp.cnt,0)::int, COALESCE(doc.cnt,0)::int,
+		       i.payment_type, i.due_date, COALESCE(pay.paid, 0)
+		FROM invoices i
+		LEFT JOIN buyers b ON b.id = i.buyer_id
+		LEFT JOIN entities e ON e.id = i.entity_id
+		LEFT JOIN (
+		  SELECT invoice_id, COUNT(*) AS cnt FROM invoice_exceptions WHERE status = 'open' GROUP BY invoice_id
+		) exc ON exc.invoice_id = i.id
+		LEFT JOIN (
+		  SELECT invoice_id, COUNT(*) AS cnt FROM invoice_disputes WHERE status IN ('OPEN','OWNER_REVIEWING') GROUP BY invoice_id
+		) disp ON disp.invoice_id = i.id
+		LEFT JOIN (
+		  SELECT invoice_id, COUNT(*) AS cnt FROM documents GROUP BY invoice_id
+		) doc ON doc.invoice_id = i.id
+		LEFT JOIN (
+		  SELECT invoice_id, SUM(amount) AS paid FROM invoice_payments GROUP BY invoice_id
+		) pay ON pay.invoice_id = i.id`
+
+	where := []string{}
+	args := []interface{}{}
+	arg := func(v interface{}) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	if f.Query != "" {
+		p := arg("%" + f.Query + "%")
+		where = append(where, fmt.Sprintf("(i.invoice_number ILIKE %s OR b.name ILIKE %s OR b.gstin ILIKE %s)", p, p, p))
+	}
+	if f.Status != "" {
+		where = append(where, "i.current_state = "+arg(f.Status))
+	}
+	if f.BuyerID != "" {
+		where = append(where, "i.buyer_id = "+arg(f.BuyerID))
+	}
+	if f.From != nil {
+		where = append(where, "i.invoice_date >= "+arg(*f.From))
+	}
+	if f.To != nil {
+		where = append(where, "i.invoice_date <= "+arg(*f.To))
+	}
+	if f.HasOpenIssues != nil {
+		if *f.HasOpenIssues {
+			where = append(where, "(COALESCE(exc.cnt,0) + COALESCE(disp.cnt,0)) > 0")
+		} else {
+			where = append(where, "(COALESCE(exc.cnt,0) + COALESCE(disp.cnt,0)) = 0")
+		}
+	}
+	if len(where) > 0 {
+		query += "\n\t\tWHERE " + strings.Join(where, " AND ")
+	}
+	query += "\n\t\tORDER BY i.created_at DESC\n\t\tLIMIT " + arg(f.Limit) + " OFFSET " + arg(f.Offset)
+
 	var out []*OwnerInvoiceRow
 	err := r.WithTx(ctx, tenantID, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `
-			SELECT i.id, i.invoice_number, i.invoice_date, i.gross_amount, i.tax_amount,
-			       i.current_state, i.created_at,
-			       b.name, b.gstin, e.legal_name,
-			       COALESCE(exc.cnt,0)::int, COALESCE(disp.cnt,0)::int, COALESCE(doc.cnt,0)::int
-			FROM invoices i
-			LEFT JOIN buyers b ON b.id = i.buyer_id
-			LEFT JOIN entities e ON e.id = i.entity_id
-			LEFT JOIN (
-			  SELECT invoice_id, COUNT(*) AS cnt FROM invoice_exceptions WHERE status = 'open' GROUP BY invoice_id
-			) exc ON exc.invoice_id = i.id
-			LEFT JOIN (
-			  SELECT invoice_id, COUNT(*) AS cnt FROM invoice_disputes WHERE status IN ('OPEN','OWNER_REVIEWING') GROUP BY invoice_id
-			) disp ON disp.invoice_id = i.id
-			LEFT JOIN (
-			  SELECT invoice_id, COUNT(*) AS cnt FROM documents GROUP BY invoice_id
-			) doc ON doc.invoice_id = i.id
-			ORDER BY i.created_at DESC
-			LIMIT $1 OFFSET $2`, limit, offset)
+		rows, err := tx.Query(ctx, query, args...)
 		if err != nil {
 			return err
 		}
@@ -1538,7 +1596,8 @@ func (r *Repository) ListInvoicesForOwner(ctx context.Context, tenantID string, 
 			var row OwnerInvoiceRow
 			if err := rows.Scan(&row.ID, &row.InvoiceNumber, &row.InvoiceDate, &row.GrossAmount,
 				&row.TaxAmount, &row.CurrentState, &row.CreatedAt, &row.BuyerName, &row.BuyerGSTIN,
-				&row.EntityName, &row.OpenExceptions, &row.OpenDisputes, &row.DocumentCount); err != nil {
+				&row.EntityName, &row.OpenExceptions, &row.OpenDisputes, &row.DocumentCount,
+				&row.PaymentType, &row.DueDate, &row.PaidAmount); err != nil {
 				return err
 			}
 			out = append(out, &row)
@@ -1575,15 +1634,20 @@ func (r *Repository) GetInvoiceDetail(ctx context.Context, tenantID, invoiceID s
 			SELECT i.id, i.invoice_number, i.invoice_date, i.gross_amount, i.tax_amount,
 			       i.current_state, i.created_at,
 			       b.name, b.gstin, e.legal_name,
-			       0::int, 0::int, 0::int
+			       0::int, 0::int, 0::int,
+			       i.payment_type, i.due_date, COALESCE(pay.paid, 0)
 			FROM invoices i
 			LEFT JOIN buyers b ON b.id = i.buyer_id
 			LEFT JOIN entities e ON e.id = i.entity_id
+			LEFT JOIN (
+			  SELECT invoice_id, SUM(amount) AS paid FROM invoice_payments GROUP BY invoice_id
+			) pay ON pay.invoice_id = i.id
 			WHERE i.id = $1`, invoiceID).
 			Scan(&inv.ID, &inv.InvoiceNumber, &inv.InvoiceDate, &inv.GrossAmount,
 				&inv.TaxAmount, &inv.CurrentState, &inv.CreatedAt,
 				&inv.BuyerName, &inv.BuyerGSTIN, &inv.EntityName,
-				&inv.OpenExceptions, &inv.OpenDisputes, &inv.DocumentCount)
+				&inv.OpenExceptions, &inv.OpenDisputes, &inv.DocumentCount,
+				&inv.PaymentType, &inv.DueDate, &inv.PaidAmount)
 		if err != nil {
 			return err
 		}

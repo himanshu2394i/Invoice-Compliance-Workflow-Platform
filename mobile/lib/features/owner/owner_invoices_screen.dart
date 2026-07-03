@@ -36,15 +36,31 @@ class OwnerInvoicesScreen extends ConsumerStatefulWidget {
 class _OwnerInvoicesScreenState extends ConsumerState<OwnerInvoicesScreen> {
   final _searchController = TextEditingController();
 
+  // Server-side filter state. The search box narrows locally as you type
+  // (instant) and re-queries the server on submit (whole-ledger search).
+  String _serverQuery = '';
+  String _status = '';
+  bool? _hasOpenIssues;
+
+  OwnerInvoiceQuery get _query =>
+      (q: _serverQuery, status: _status, hasOpenIssues: _hasOpenIssues);
+
   @override
   void dispose() {
     _searchController.dispose();
     super.dispose();
   }
 
+  void _selectFilter({String status = '', bool? hasOpenIssues}) {
+    setState(() {
+      _status = status;
+      _hasOpenIssues = hasOpenIssues;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
-    final invoicesAsync = ref.watch(ownerInvoicesProvider);
+    final invoicesAsync = ref.watch(ownerInvoicesSearchProvider(_query));
 
     // Tab root inside the owner shell: no back affordance, the shell
     // handles it.
@@ -54,7 +70,7 @@ class _OwnerInvoicesScreenState extends ConsumerState<OwnerInvoicesScreen> {
           actions: [
             IconButton(
               icon: const Icon(Icons.refresh),
-              onPressed: () => ref.invalidate(ownerInvoicesProvider),
+              onPressed: () => ref.invalidate(ownerInvoicesSearchProvider),
             ),
           ],
         ),
@@ -86,15 +102,18 @@ class _OwnerInvoicesScreenState extends ConsumerState<OwnerInvoicesScreen> {
   Widget _buildInvoices(List<OwnerInvoice> invoices) {
     final visibleInvoices =
         filterOwnerInvoices(invoices, _searchController.text);
+    final filtering =
+        _serverQuery.isNotEmpty || _status.isNotEmpty || _hasOpenIssues != null;
 
     return RefreshIndicator(
-      onRefresh: () async => ref.invalidate(ownerInvoicesProvider),
+      onRefresh: () async => ref.invalidate(ownerInvoicesSearchProvider),
       child: ListView(
         padding: const EdgeInsets.all(12),
         children: [
           TextField(
             controller: _searchController,
             onChanged: (_) => setState(() {}),
+            onSubmitted: (v) => setState(() => _serverQuery = v.trim()),
             textInputAction: TextInputAction.search,
             decoration: InputDecoration(
               prefixIcon: const Icon(Icons.search),
@@ -105,21 +124,83 @@ class _OwnerInvoicesScreenState extends ConsumerState<OwnerInvoicesScreen> {
                       tooltip: 'Clear search',
                       onPressed: () {
                         _searchController.clear();
-                        setState(() {});
+                        setState(() => _serverQuery = '');
                       },
                     ),
               hintText: 'Search invoice, buyer, GSTIN, amount, status',
+              helperText:
+                  'Press enter/search to look through the whole ledger',
               border: const OutlineInputBorder(),
             ),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                _FilterChip(
+                  label: 'All',
+                  selected: _status.isEmpty && _hasOpenIssues == null,
+                  onSelected: () => _selectFilter(),
+                ),
+                _FilterChip(
+                  label: 'Needs attention',
+                  selected: _hasOpenIssues == true,
+                  onSelected: () => _selectFilter(hasOpenIssues: true),
+                ),
+                _FilterChip(
+                  label: 'Submitted',
+                  selected: _status == 'INGESTED',
+                  onSelected: () => _selectFilter(status: 'INGESTED'),
+                ),
+                _FilterChip(
+                  label: 'Approved',
+                  selected: _status == 'APPROVED',
+                  onSelected: () => _selectFilter(status: 'APPROVED'),
+                ),
+                _FilterChip(
+                  label: 'Archived',
+                  selected: _status == 'ARCHIVED',
+                  onSelected: () => _selectFilter(status: 'ARCHIVED'),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
           if (invoices.isEmpty)
-            const _EmptyInvoicesMessage(message: 'No invoices yet')
+            _EmptyInvoicesMessage(
+                message:
+                    filtering ? 'No invoices match the filters' : 'No invoices yet')
           else if (visibleInvoices.isEmpty)
             const _EmptyInvoicesMessage(message: 'No matching invoices')
           else
             for (final inv in visibleInvoices) _InvoiceListCard(invoice: inv),
         ],
+      ),
+    );
+  }
+}
+
+class _FilterChip extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onSelected;
+
+  const _FilterChip({
+    required this.label,
+    required this.selected,
+    required this.onSelected,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(right: 6),
+      child: ChoiceChip(
+        label: Text(label),
+        selected: selected,
+        onSelected: (_) => onSelected(),
+        visualDensity: VisualDensity.compact,
       ),
     );
   }

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/himanshu2394i/invoice-saas/internal/db"
 )
@@ -44,21 +45,46 @@ func (s *Server) handleGetAlerts(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleOwnerListInvoices(w http.ResponseWriter, r *http.Request) {
 	tenantID := claimsFromContext(r.Context()).OrganizationID
+	q := r.URL.Query()
 
-	limit := 30
-	offset := 0
-	if v := r.URL.Query().Get("limit"); v != "" {
+	filter := db.OwnerInvoiceFilter{
+		Query:   strings.TrimSpace(q.Get("q")),
+		Status:  strings.TrimSpace(q.Get("status")),
+		BuyerID: strings.TrimSpace(q.Get("buyer_id")),
+		Limit:   30,
+	}
+	if v := q.Get("limit"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 100 {
-			limit = n
+			filter.Limit = n
 		}
 	}
-	if v := r.URL.Query().Get("offset"); v != "" {
+	if v := q.Get("offset"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			offset = n
+			filter.Offset = n
 		}
+	}
+	if v := q.Get("from"); v != "" {
+		if d, err := time.Parse("2006-01-02", v); err == nil {
+			filter.From = &d
+		} else {
+			writeError(w, http.StatusBadRequest, "from must be YYYY-MM-DD")
+			return
+		}
+	}
+	if v := q.Get("to"); v != "" {
+		if d, err := time.Parse("2006-01-02", v); err == nil {
+			filter.To = &d
+		} else {
+			writeError(w, http.StatusBadRequest, "to must be YYYY-MM-DD")
+			return
+		}
+	}
+	if v := q.Get("has_open_issues"); v != "" {
+		b := v == "true" || v == "1"
+		filter.HasOpenIssues = &b
 	}
 
-	rows, err := s.Repo.ListInvoicesForOwner(r.Context(), tenantID, limit, offset)
+	rows, err := s.Repo.ListInvoicesForOwner(r.Context(), tenantID, filter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to list invoices: "+err.Error())
 		return
@@ -66,7 +92,7 @@ func (s *Server) handleOwnerListInvoices(w http.ResponseWriter, r *http.Request)
 	if rows == nil {
 		rows = []*db.OwnerInvoiceRow{}
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"invoices": rows, "limit": limit, "offset": offset})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"invoices": rows, "limit": filter.Limit, "offset": filter.Offset})
 }
 
 // ─── Owner Invoice Detail ─────────────────────────────────────────────────────

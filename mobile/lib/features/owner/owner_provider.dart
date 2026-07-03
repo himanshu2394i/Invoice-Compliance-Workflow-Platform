@@ -313,11 +313,22 @@ class OwnerService {
         .toList();
   }
 
-  Future<List<OwnerInvoice>> listInvoices(
-      {int offset = 0, int limit = 30}) async {
+  Future<List<OwnerInvoice>> listInvoices({
+    int offset = 0,
+    int limit = 30,
+    String q = '',
+    String status = '',
+    bool? hasOpenIssues,
+  }) async {
     final resp = await _dio.get(
       Endpoints.ownerInvoices,
-      queryParameters: {'offset': offset, 'limit': limit},
+      queryParameters: {
+        'offset': offset,
+        'limit': limit,
+        if (q.isNotEmpty) 'q': q,
+        if (status.isNotEmpty) 'status': status,
+        if (hasOpenIssues != null) 'has_open_issues': hasOpenIssues.toString(),
+      },
     );
     final list = resp.data['invoices'] as List? ?? [];
     return list
@@ -586,6 +597,21 @@ final ownerAlertsProvider = FutureProvider<List<AlertItem>>((ref) async {
 
 final ownerInvoicesProvider = FutureProvider<List<OwnerInvoice>>((ref) async {
   return ownerService.listInvoices();
+});
+
+/// Server-side filtered invoice search — the All Invoices screen's data
+/// source, so searches cover the whole ledger, not just the loaded page.
+typedef OwnerInvoiceQuery = ({String q, String status, bool? hasOpenIssues});
+
+final ownerInvoicesSearchProvider =
+    FutureProvider.family<List<OwnerInvoice>, OwnerInvoiceQuery>(
+        (ref, query) async {
+  return ownerService.listInvoices(
+    q: query.q,
+    status: query.status,
+    hasOpenIssues: query.hasOpenIssues,
+    limit: 100,
+  );
 });
 
 final ownerInvoiceDetailProvider =
