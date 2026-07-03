@@ -66,6 +66,28 @@ func TestValidateAgainstExpectedRejectsWorkerAmountMismatch(t *testing.T) {
 	}
 }
 
+func TestValidateAgainstExpectedSkipsAmountsWhenOCRSawNoTotal(t *testing.T) {
+	// A multi-page invoice photographed without its last page yields a
+	// partial extraction: header fields present, amounts zeroed. That must
+	// not read as "the total is zero and disagrees with the worker".
+	result := ValidateAgainstExpected(InvoiceData{
+		InvoiceNumber: "A260000218",
+		VendorGSTIN:   "06AAAAA0003A1Z3",
+		GrossAmount:   0,
+		NetAmount:     0,
+		TaxAmount:     0,
+	}, ExpectedInvoice{
+		InvoiceNumber: "A260000218",
+		SellerGSTIN:   "06AAAAA0003A1Z3",
+		GrossAmount:   10913,
+		TaxAmount:     519.55,
+	})
+
+	if result.HasCode("invoice_data_mismatch") {
+		t.Fatalf("partial extraction must not raise amount mismatches, got %#v", result.Errors)
+	}
+}
+
 func TestValidateAgainstExpectedAcceptsMatchingInvoice(t *testing.T) {
 	result := ValidateAgainstExpected(InvoiceData{
 		InvoiceNumber: "A260000218",

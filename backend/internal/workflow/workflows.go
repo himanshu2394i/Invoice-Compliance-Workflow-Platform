@@ -44,13 +44,20 @@ type InvoiceProcessResult struct {
 	Message    string
 }
 
-func InvoiceOCRPreviewWorkflow(ctx workflow.Context, s3URI string) (validation.InvoiceData, error) {
+// InvoiceOCRPreviewWorkflow extracts fields from every page photo of one
+// invoice (in page order) so the capture screen can autofill before the
+// worker types anything. Multi-page matters: Meridian invoices print the
+// grand total on the LAST page, so extraction that only saw page 1 could
+// never fill the amounts.
+func InvoiceOCRPreviewWorkflow(ctx workflow.Context, s3URIs []string) (validation.InvoiceData, error) {
 	ocrCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: time.Second * 20,
+		// Multi-image Claude calls run longer than the single-page 20s
+		// budget did; the API handler stops waiting before this expires.
+		StartToCloseTimeout: time.Second * 40,
 		TaskQueue:           "ocr-tasks",
 	})
 	var extractedData validation.InvoiceData
-	if err := workflow.ExecuteActivity(ocrCtx, "ExtractTextAndLayout", s3URI).Get(ocrCtx, &extractedData); err != nil {
+	if err := workflow.ExecuteActivity(ocrCtx, "ExtractTextAndLayout", s3URIs).Get(ocrCtx, &extractedData); err != nil {
 		return validation.InvoiceData{}, err
 	}
 	return extractedData, nil

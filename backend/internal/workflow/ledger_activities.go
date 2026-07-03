@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
+
+	"github.com/himanshu2394i/invoice-saas/internal/db"
 )
 
 // DocumentHeaderExtraction is the lightweight extraction target for a
@@ -18,6 +21,17 @@ type DocumentHeaderExtraction struct {
 	InvoiceNumber string
 	BuyerGSTIN    string
 	Amount        *float64
+	// Receiving fields, present when the document is a gate entry note /
+	// GRN / stock receiving acknowledgement. The matcher records these on
+	// the invoice's gate entry metadata so the owner doesn't re-type what
+	// the photo already says. Only the Claude extractor fills them; the
+	// Textract fallback leaves them at their zero values.
+	DocumentType      string
+	GateEntryNumber   string
+	DocumentDate      string // ISO YYYY-MM-DD, or "" when not printed/legible
+	AcceptedQty       *float64
+	InvoiceQty        *float64
+	DiscrepancyAmount *float64
 	// Simulated is true when no real OCR backend (AWS Textract, etc.) is
 	// configured. A simulated result carries no real signal, so
 	// MatchDocumentToInvoiceActivity must NOT treat it as a confirmed
@@ -32,7 +46,15 @@ func (e DocumentHeaderExtraction) IsInconclusive() bool {
 	return e.Inconclusive ||
 		(strings.TrimSpace(e.InvoiceNumber) == "" &&
 			strings.TrimSpace(e.BuyerGSTIN) == "" &&
-			e.Amount == nil)
+			e.Amount == nil &&
+			e.AcceptedQty == nil && e.InvoiceQty == nil)
+}
+
+// hasReceivingData reports whether the extraction carried any gate-entry
+// quantity worth recording -- the presence of these fields is itself the
+// signal that the photo was a receiving document.
+func (e DocumentHeaderExtraction) hasReceivingData() bool {
+	return e.AcceptedQty != nil || e.InvoiceQty != nil || e.DiscrepancyAmount != nil
 }
 
 type MatchDocumentInput struct {
@@ -98,6 +120,15 @@ func MatchDocumentToInvoiceActivity(ctx context.Context, input MatchDocumentInpu
 		}
 	}
 
+	// Record receiving quantities regardless of the match outcome -- a gate
+	// entry note whose invoice number smudged still tells us what quantity
+	// the buyer accepted.
+	if input.Extracted.hasReceivingData() {
+		if err := recordGateEntryFromExtraction(ctx, input); err != nil {
+			return err
+		}
+	}
+
 	if len(mismatches) == 0 {
 		return Repo.WriteAuditLog(ctx, input.TenantID, input.InvoiceID, "DOCUMENT_MATCHED", "system",
 			"Supporting document matched the invoice", map[string]interface{}{"document_id": input.DocumentID})
@@ -112,4 +143,71 @@ func MatchDocumentToInvoiceActivity(ctx context.Context, input MatchDocumentInpu
 	}
 	return Repo.WriteAuditLog(ctx, input.TenantID, input.InvoiceID, "DOCUMENT_MISMATCH_DETECTED", "system",
 		strings.Join(mismatches, "; "), map[string]interface{}{"document_id": input.DocumentID})
+}
+
+// recordGateEntryFromExtraction writes the quantities Claude read off a
+// receiving document into the invoice's gate entry metadata and, when they
+// show a shortage, raises the same idempotent SHORT_RECEIPT dispute the
+// owner's manual gate-entry form would (see api.handleSetGateEntry). A row a
+// human already entered for this document always wins over the AI's read.
+func recordGateEntryFromExtraction(ctx context.Context, input MatchDocumentInput) error {
+	existing, err := Repo.ListGateEntriesByInvoice(ctx, input.TenantID, input.InvoiceID)
+	if err != nil {
+		return err
+	}
+	for _, entry := range existing {
+		if entry.DocumentID == input.DocumentID && entry.EnteredBy != nil {
+			return nil
+		}
+	}
+
+	ex := input.Extracted
+	shortReceipt := (ex.AcceptedQty != nil && ex.InvoiceQty != nil && *ex.AcceptedQty < *ex.InvoiceQty) ||
+		(ex.DiscrepancyAmount != nil && *ex.DiscrepancyAmount > 0)
+
+	notes := "Extracted automatically from the uploaded document photo by AI"
+	meta := &db.GateEntryMetadata{
+		DocumentID:        input.DocumentID,
+		InvoiceID:         input.InvoiceID,
+		AcceptedQty:       ex.AcceptedQty,
+		InvoiceQty:        ex.InvoiceQty,
+		DiscrepancyAmount: ex.DiscrepancyAmount,
+		IsShortReceipt:    shortReceipt,
+		Notes:             &notes,
+	}
+	if num := strings.TrimSpace(ex.GateEntryNumber); num != "" {
+		meta.GateEntryNumber = &num
+	}
+	if date := strings.TrimSpace(ex.DocumentDate); date != "" {
+		if _, perr := time.Parse("2006-01-02", date); perr == nil {
+			meta.GateEntryDate = &date
+		}
+	}
+	if err := Repo.UpsertGateEntryMetadata(ctx, input.TenantID, meta); err != nil {
+		return err
+	}
+
+	if shortReceipt {
+		hasOpen, derr := Repo.HasOpenDisputeForInvoice(ctx, input.TenantID, input.InvoiceID)
+		if derr == nil && !hasOpen {
+			desc := "Receiving mismatch detected on the uploaded gate entry document"
+			if ex.AcceptedQty != nil && ex.InvoiceQty != nil && *ex.AcceptedQty < *ex.InvoiceQty {
+				desc = fmt.Sprintf("Short receipt: accepted %.2f of %.2f invoiced (read from the document photo)",
+					*ex.AcceptedQty, *ex.InvoiceQty)
+			}
+			_ = Repo.CreateDispute(ctx, input.TenantID, &db.InvoiceDispute{
+				InvoiceID:   input.InvoiceID,
+				DisputeType: "SHORT_RECEIPT",
+				Description: desc,
+			})
+		}
+	}
+
+	return Repo.WriteAuditLog(ctx, input.TenantID, input.InvoiceID, "GATE_ENTRY_AUTO_EXTRACTED", "system",
+		"Gate entry quantities extracted from the uploaded document",
+		map[string]interface{}{
+			"document_id":      input.DocumentID,
+			"document_type":    ex.DocumentType,
+			"is_short_receipt": shortReceipt,
+		})
 }

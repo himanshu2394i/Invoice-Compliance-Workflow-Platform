@@ -12,10 +12,11 @@ import 'camera_screen.dart'; // CameraTarget
 import 'series_detect.dart';
 
 final reviewDioProvider = Provider<Dio>((ref) => buildDio());
-final ocrPreviewProvider = Provider<Future<InvoiceOCRPreview> Function(String)>(
+final ocrPreviewProvider =
+    Provider<Future<InvoiceOCRPreview> Function(List<String>)>(
   (ref) {
     final dio = ref.watch(reviewDioProvider);
-    return (path) => fetchInvoiceOCRPreview(dio, path);
+    return (paths) => fetchInvoiceOCRPreview(dio, paths);
   },
 );
 
@@ -122,17 +123,23 @@ class InvoiceDuplicateCheck {
       );
 }
 
-Future<InvoiceOCRPreview> fetchInvoiceOCRPreview(Dio dio, String path) async {
-  final resp = await dio.post(
-    Endpoints.invoiceOcrPreview,
-    data: FormData.fromMap({
-      'file': await MultipartFile.fromFile(
-        path,
-        filename: 'invoice-preview.jpg',
+/// Sends ALL invoice page photos in one request (page order preserved) —
+/// Meridian invoices carry the grand total on the last page, so a preview
+/// that only saw page 1 could never autofill the amounts.
+Future<InvoiceOCRPreview> fetchInvoiceOCRPreview(
+    Dio dio, List<String> paths) async {
+  final form = FormData();
+  for (var i = 0; i < paths.length; i++) {
+    form.files.add(MapEntry(
+      'file',
+      await MultipartFile.fromFile(
+        paths[i],
+        filename: 'invoice-page-${i + 1}.jpg',
         contentType: DioMediaType('image', 'jpeg'),
       ),
-    }),
-  );
+    ));
+  }
+  final resp = await dio.post(Endpoints.invoiceOcrPreview, data: form);
   return InvoiceOCRPreview.fromJson(resp.data as Map<String, dynamic>? ?? {});
 }
 
@@ -321,19 +328,24 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
 
   Future<void> _runOCRPreviewIfPossible() async {
     if (_ocrAttempted || !mounted) return;
-    final pagePaths = ref.read(bundleProvider).invoicePhotoPaths;
+    final pagePaths = ref
+        .read(bundleProvider)
+        .invoicePhotoPaths
+        .where((p) => File(p).existsSync())
+        .toList();
     if (pagePaths.isEmpty) return;
     _ocrAttempted = true;
-    if (!File(pagePaths.first).existsSync()) return;
     setState(() {
       _lookingUpOcr = true;
-      _ocrStatus = 'Reading invoice photo...';
+      _ocrStatus = pagePaths.length > 1
+          ? 'Reading ${pagePaths.length} invoice pages...'
+          : 'Reading invoice photo...';
       _ocrWarning = null;
       _ocrFilledFields = {};
       _ocrHighConfidenceFields = {};
     });
     try {
-      final data = await ref.read(ocrPreviewProvider)(pagePaths.first);
+      final data = await ref.read(ocrPreviewProvider)(pagePaths);
       if (!data.ocrAvailable) {
         if (mounted) {
           setState(() {

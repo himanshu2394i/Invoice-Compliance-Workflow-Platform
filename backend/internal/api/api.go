@@ -148,13 +148,13 @@ func (s *Server) startInvoiceWorkflow(ctx context.Context, tenantID, invoiceID, 
 	return s.TemporalClient.ExecuteWorkflow(ctx, options, workflowpkg.InvoiceWorkflow, input)
 }
 
-func (s *Server) startInvoiceOCRPreviewWorkflow(ctx context.Context, tenantID, s3Key string) (client.WorkflowRun, error) {
+func (s *Server) startInvoiceOCRPreviewWorkflow(ctx context.Context, tenantID string, s3Keys []string) (client.WorkflowRun, error) {
 	workflowID := fmt.Sprintf("tenant-%s-ocr-preview-%d", tenantID, time.Now().UnixNano())
 	options := client.StartWorkflowOptions{
 		ID:        workflowID,
 		TaskQueue: invoiceTaskQueue,
 	}
-	return s.TemporalClient.ExecuteWorkflow(ctx, options, workflowpkg.InvoiceOCRPreviewWorkflow, s3Key)
+	return s.TemporalClient.ExecuteWorkflow(ctx, options, workflowpkg.InvoiceOCRPreviewWorkflow, s3Keys)
 }
 
 type InvoiceOCRPreviewResponse struct {
@@ -250,34 +250,59 @@ func hasPreviewValue(resp InvoiceOCRPreviewResponse, key string) bool {
 	return false
 }
 
+// maxOCRPreviewPages bounds how many page photos one preview call will send
+// through Claude -- real Meridian invoices run 1-3 pages; anything past this
+// is almost certainly a mis-tap and only adds cost and latency.
+const maxOCRPreviewPages = 6
+
 func (s *Server) handleInvoiceOCRPreview(w http.ResponseWriter, r *http.Request) {
 	claims := claimsFromContext(r.Context())
 	tenantID := claims.OrganizationID
 
-	if err := r.ParseMultipartForm(16 << 20); err != nil {
-		writeError(w, http.StatusBadRequest, "Expected multipart/form-data with a 'file' part: "+err.Error())
+	if err := r.ParseMultipartForm(64 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "Expected multipart/form-data with one or more 'file' parts: "+err.Error())
 		return
 	}
-	file, header, err := r.FormFile("file")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "Missing 'file' part: "+err.Error())
+	var headers []*multipart.FileHeader
+	if r.MultipartForm != nil {
+		headers = r.MultipartForm.File["file"]
+	}
+	if len(headers) == 0 {
+		writeError(w, http.StatusBadRequest, "Missing 'file' part")
 		return
 	}
-	defer file.Close()
+	if len(headers) > maxOCRPreviewPages {
+		headers = headers[:maxOCRPreviewPages]
+	}
 
-	s3Key := fmt.Sprintf("tmp/ocr-preview/%s/%d/%s", tenantID, time.Now().UnixNano(), filepath.Base(header.Filename))
-	if _, _, err := s.Store.Save(s3Key, file); err != nil {
-		writeJSON(w, http.StatusOK, InvoiceOCRPreviewResponse{OCRAvailable: false, Error: "preview image could not be stored"})
-		return
+	batch := time.Now().UnixNano()
+	s3Keys := make([]string, 0, len(headers))
+	for i, header := range headers {
+		file, err := header.Open()
+		if err != nil {
+			writeJSON(w, http.StatusOK, InvoiceOCRPreviewResponse{OCRAvailable: false, Error: "preview image could not be read"})
+			return
+		}
+		s3Key := fmt.Sprintf("tmp/ocr-preview/%s/%d/page-%d-%s", tenantID, batch, i+1, filepath.Base(header.Filename))
+		_, _, err = s.Store.Save(s3Key, file)
+		file.Close()
+		if err != nil {
+			writeJSON(w, http.StatusOK, InvoiceOCRPreviewResponse{OCRAvailable: false, Error: "preview image could not be stored"})
+			return
+		}
+		s3Keys = append(s3Keys, s3Key)
 	}
 
-	run, err := s.startInvoiceOCRPreviewWorkflow(context.Background(), tenantID, s3Key)
+	run, err := s.startInvoiceOCRPreviewWorkflow(context.Background(), tenantID, s3Keys)
 	if err != nil {
 		writeJSON(w, http.StatusOK, InvoiceOCRPreviewResponse{OCRAvailable: false, Error: "OCR preview could not be started"})
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	// Slightly under the workflow activity's 40s StartToCloseTimeout: the
+	// handler gives up first and reports timed_out instead of surfacing a
+	// workflow error.
+	ctx, cancel := context.WithTimeout(r.Context(), 35*time.Second)
 	defer cancel()
 	var data validation.InvoiceData
 	if err := run.Get(ctx, &data); err != nil {
@@ -540,8 +565,17 @@ func (s *Server) handleUploadSupportingDocument(w http.ResponseWriter, r *http.R
 	}
 	docType = strings.ToUpper(strings.TrimSpace(docType))
 
-	existingDoc, existingDocErr := s.Repo.GetDocumentByInvoiceAndType(r.Context(), tenantID, inv.ID, docType)
-	if existingDocErr == nil && !canAppendDocumentVersion(claims.Role) {
+	// INVOICE_PAGE never goes through same-type replacement: pages 2..N of a
+	// multi-page invoice all carry this type, so treating a second one as a
+	// "replacement" of the first would break every 3+ page invoice (and 403
+	// workers mid-sync). Each page is its own document.
+	var existingDoc *db.Document
+	if docType != "INVOICE_PAGE" {
+		if doc, err := s.Repo.GetDocumentByInvoiceAndType(r.Context(), tenantID, inv.ID, docType); err == nil {
+			existingDoc = doc
+		}
+	}
+	if existingDoc != nil && !canAppendDocumentVersion(claims.Role) {
 		writeError(w, http.StatusForbidden, "Only managers and admins can replace an existing document")
 		return
 	}
@@ -553,7 +587,7 @@ func (s *Server) handleUploadSupportingDocument(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	if existingDocErr == nil {
+	if existingDoc != nil {
 		ver := &db.DocumentVersion{
 			DocumentID: existingDoc.ID,
 			S3Key:      s3Key,

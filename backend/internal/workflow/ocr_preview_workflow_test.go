@@ -24,14 +24,14 @@ func TestInvoiceOCRPreviewWorkflowReturnsExtractedFields(t *testing.T) {
 		Inconclusive:  false,
 	}
 	env.RegisterActivityWithOptions(
-		func(context.Context, string) (validation.InvoiceData, error) {
+		func(context.Context, []string) (validation.InvoiceData, error) {
 			return validation.InvoiceData{}, nil
 		},
 		activity.RegisterOptions{Name: "ExtractTextAndLayout"},
 	)
-	env.OnActivity("ExtractTextAndLayout", mock.Anything, "temp/preview.jpg").Return(expected, nil)
+	env.OnActivity("ExtractTextAndLayout", mock.Anything, []string{"temp/page-1.jpg", "temp/page-2.jpg"}).Return(expected, nil)
 
-	env.ExecuteWorkflow(InvoiceOCRPreviewWorkflow, "temp/preview.jpg")
+	env.ExecuteWorkflow(InvoiceOCRPreviewWorkflow, []string{"temp/page-1.jpg", "temp/page-2.jpg"})
 
 	if !env.IsWorkflowCompleted() {
 		t.Fatal("expected preview workflow to complete")

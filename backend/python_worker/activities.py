@@ -193,12 +193,15 @@ SUPPORTING_DOC_SCHEMA = {
                 "linked_invoice_number": {"type": ["string", "null"]},
                 "buyer_gstin": {"type": ["string", "null"]},
                 "invoice_amount": {"type": ["number", "null"]},
+                "gate_entry_number": {"type": ["string", "null"]},
+                "document_date": {"type": ["string", "null"]},
                 "accepted_quantity": {"type": ["number", "null"]},
                 "invoice_quantity": {"type": ["number", "null"]},
                 "discrepancy_amount": {"type": ["number", "null"]},
             },
             "required": [
                 "linked_invoice_number", "buyer_gstin", "invoice_amount",
+                "gate_entry_number", "document_date",
                 "accepted_quantity", "invoice_quantity", "discrepancy_amount",
             ],
             "additionalProperties": False,
@@ -249,35 +252,41 @@ def _load_image_b64(image_path: str) -> str:
         return base64.standard_b64encode(f.read()).decode("utf-8")
 
 
-async def _claude_extract_json(image_path: str, schema: dict, instruction: str):
-    """One Claude vision call with structured outputs. The response's first
-    text block is guaranteed by the API to be valid JSON conforming to the
-    schema, so json.loads never sees free-form prose. Returns the parsed dict
-    or None on any failure (refusal, truncation, timeout) so callers can fall
-    back to Textract."""
+async def _claude_extract_json(image_paths, schema: dict, instruction: str):
+    """One Claude vision call with structured outputs over one or more page
+    photos (Claude accepts multiple images per request -- Textract cannot).
+    The response's first text block is guaranteed by the API to be valid JSON
+    conforming to the schema, so json.loads never sees free-form prose.
+    Returns the parsed dict or None on any failure (refusal, truncation,
+    timeout) so callers can fall back to Textract."""
+    if isinstance(image_paths, str):
+        image_paths = [image_paths]
     client = _get_claude_client()
+    content = []
+    for i, image_path in enumerate(image_paths):
+        if len(image_paths) > 1:
+            content.append({"type": "text", "text": f"Page {i + 1} of {len(image_paths)}:"})
+        content.append({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": _guess_media_type(image_path),
+                "data": _load_image_b64(image_path),
+            },
+        })
+    content.append({"type": "text", "text": instruction})
     response = await client.messages.create(
         model=CLAUDE_MODEL,
         max_tokens=2048,
         output_config={
             "format": {"type": "json_schema", "schema": schema},
-            # Low effort keeps the call inside the OCR preview's 20s budget;
-            # header extraction is a simple perception task.
+            # Low effort keeps the call inside the OCR preview's server-side
+            # wait budget; header extraction is a simple perception task.
             "effort": "low",
         },
         messages=[{
             "role": "user",
-            "content": [
-                {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": _guess_media_type(image_path),
-                        "data": _load_image_b64(image_path),
-                    },
-                },
-                {"type": "text", "text": instruction},
-            ],
+            "content": content,
         }],
     )
     if response.stop_reason == "refusal":
@@ -290,15 +299,27 @@ async def _claude_extract_json(image_path: str, schema: dict, instruction: str):
     return json.loads(text)
 
 
-async def _extract_via_claude(image_path: str):
-    """Full tax-invoice extraction via Claude. Returns the pipeline dict shape
-    (same keys the Go side unmarshals into validation.InvoiceData) or None to
-    fall back to Textract."""
-    try:
-        data = await _claude_extract_json(
-            image_path, TAX_INVOICE_SCHEMA,
-            _EXTRACTION_RULES + "\n\nExtract the tax invoice header and totals from this photo.",
+async def _extract_via_claude(image_paths):
+    """Full tax-invoice extraction via Claude over all pages of one invoice.
+    Returns the pipeline dict shape (same keys the Go side unmarshals into
+    validation.InvoiceData) or None to fall back to Textract. When the total
+    isn't visible but header fields are, returns a partial result (amounts
+    zeroed, warning attached) instead of discarding the good fields --
+    Meridian's multi-page invoices carry the grand total on the LAST page, so
+    a first-page-only photo used to autofill nothing at all."""
+    if isinstance(image_paths, str):
+        image_paths = [image_paths]
+    instruction = _EXTRACTION_RULES + "\n\nExtract the tax invoice header and totals from this photo."
+    if len(image_paths) > 1:
+        instruction = (
+            _EXTRACTION_RULES
+            + f"\n\nThese {len(image_paths)} photos are ALL pages of ONE invoice, in order. "
+            + "Header fields (invoice number, date, GSTINs, buyer) usually appear on the first page; "
+            + "the grand total and tax summary usually appear on the LAST page. "
+            + "Extract a single combined record for the whole invoice."
         )
+    try:
+        data = await _claude_extract_json(image_paths, TAX_INVOICE_SCHEMA, instruction)
     except Exception as e:
         activity.logger.warning(f"Claude extraction failed: {e}")
         return None
@@ -310,23 +331,36 @@ async def _extract_via_claude(image_path: str):
         return None
 
     inv = data.get("invoice") or {}
-    conf = data.get("confidence") or {}
-    gross = inv.get("total_amount")
-    if gross is None:
-        # Same convention as the Textract path: without a total the
-        # extraction isn't usable for validation downstream.
-        activity.logger.warning("Claude found no total amount; falling back.")
-        return None
-    tax = inv.get("tax_amount") or 0.0
-    net = inv.get("taxable_amount")
-    if net is None:
-        net = gross - tax
+    conf = dict(data.get("confidence") or {})
 
     warnings = [
         w.get("message", "")
         for w in (data.get("warnings") or [])
         if isinstance(w, dict) and w.get("message")
     ]
+
+    gross = inv.get("total_amount")
+    if gross is None:
+        header_keys = ("invoice_number", "seller_gstin", "buyer_gstin", "invoice_date", "buyer_name")
+        if not any(inv.get(k) for k in header_keys):
+            activity.logger.warning("Claude found no total and no header fields; falling back.")
+            return None
+        # Partial result: keep the header fields, zero the amounts, and tell
+        # the worker in plain language what to photograph.
+        activity.logger.warning("Claude found header fields but no total; returning partial result.")
+        warnings.append(
+            "Total amount is not visible in the photos - if the invoice has more pages, "
+            "also photograph the last page (it carries the grand total).")
+        gross = 0.0
+        inv = dict(inv)
+        inv["tax_amount"] = 0.0
+        inv["taxable_amount"] = 0.0
+        for k in ("taxable_amount", "tax_amount", "gross_amount"):
+            conf[k] = 0.0
+    tax = inv.get("tax_amount") or 0.0
+    net = inv.get("taxable_amount")
+    if net is None:
+        net = gross - tax
 
     return {
         "InvoiceNumber": (inv.get("invoice_number") or "").strip(),
@@ -346,16 +380,21 @@ async def _extract_via_claude(image_path: str):
 
 
 async def _extract_header_via_claude(image_path: str):
-    """Supporting-document (gate entry / GRN / stamp) header extraction via
-    Claude, mapped onto the lighter matching shape. Returns None to fall back
-    to Textract."""
+    """Supporting-document (gate entry / GRN / stamp) extraction via Claude,
+    mapped onto the matching shape plus the receiving quantities a gate entry
+    note carries -- the Go matcher records those against the invoice so the
+    owner no longer types them by hand. Returns None to fall back to
+    Textract."""
     try:
         data = await _claude_extract_json(
             image_path, SUPPORTING_DOC_SCHEMA,
             _EXTRACTION_RULES
             + "\n\nThis is a SUPPORTING document (gate entry note, GRN, receiving stamp, or credit note) "
             + "attached to an invoice. Extract the referenced invoice number, buyer GSTIN, and amounts "
-            + "needed to match it back to that invoice.",
+            + "needed to match it back to that invoice. If it is a receiving document (gate entry note, "
+            + "GRN, stock receiving acknowledgement), also extract the gate entry number, the document's "
+            + "date, the quantity accepted, the quantity invoiced/challan quantity, and any discrepancy "
+            + "or shortage amount printed on it.",
         )
     except Exception as e:
         activity.logger.warning(f"Claude header extraction failed: {e}")
@@ -367,14 +406,24 @@ async def _extract_header_via_claude(image_path: str):
     invoice_number = (doc.get("linked_invoice_number") or "").strip()
     gstin = (doc.get("buyer_gstin") or "").strip().upper()
     amount = doc.get("invoice_amount")
+    accepted_qty = doc.get("accepted_quantity")
+    invoice_qty = doc.get("invoice_quantity")
+    discrepancy = doc.get("discrepancy_amount")
     inconclusive = (
         data.get("extraction_status") in ("INCONCLUSIVE", "UNSUPPORTED_DOCUMENT")
-        or (not invoice_number and not gstin and amount is None)
+        or (not invoice_number and not gstin and amount is None
+            and accepted_qty is None and invoice_qty is None)
     )
     return {
         "InvoiceNumber": invoice_number,
         "BuyerGSTIN": gstin,
         "Amount": float(amount) if amount is not None else None,
+        "DocumentType": (data.get("document_type") or "").strip(),
+        "GateEntryNumber": (doc.get("gate_entry_number") or "").strip(),
+        "DocumentDate": (doc.get("document_date") or "").strip(),
+        "AcceptedQty": float(accepted_qty) if accepted_qty is not None else None,
+        "InvoiceQty": float(invoice_qty) if invoice_qty is not None else None,
+        "DiscrepancyAmount": float(discrepancy) if discrepancy is not None else None,
         "Simulated": False,
         "Inconclusive": inconclusive,
     }
@@ -574,27 +623,42 @@ async def extract_document_header(storage_key: str) -> dict:
 
 
 @activity.defn(name="ExtractTextAndLayout")
-async def extract_text_and_layout(storage_key: str) -> dict:
+async def extract_text_and_layout(storage_keys) -> dict:
     """
-    storage_key is the relative path the Go API stored the uploaded file
-    under (internal/storage.Store), e.g. "uploads/<org>/<invoice>/<file>.jpeg"
-    -- not a bare filename. Tries real extraction (AWS Textract, then the
-    LayoutLMv3 stub) and falls back to deterministic simulation if neither is
-    available, so the workflow always has something to validate against.
+    storage_keys is either one relative path (str, the shape older workflow
+    histories still carry) or a list of paths -- all pages of ONE invoice, in
+    page order -- under the root internal/storage.Store writes to, e.g.
+    "uploads/<org>/<invoice>/<file>.jpeg". Claude sees every page in a single
+    request; the Textract/LayoutLMv3/simulation fallbacks only ever look at
+    the first page (Textract takes one image per call, and a later page's
+    running subtotal misread as the grand total would be worse than no
+    answer).
     """
-    activity.logger.info(f"Starting OCR extraction for: {storage_key}")
-    image_path = os.path.join(_storage_root(), storage_key)
+    if isinstance(storage_keys, str):
+        storage_keys = [storage_keys]
+    activity.logger.info(f"Starting OCR extraction for: {storage_keys}")
+    image_paths = [os.path.join(_storage_root(), k) for k in storage_keys or []]
+    image_paths = [p for p in image_paths if os.path.exists(p)]
+    image_path = image_paths[0] if image_paths else os.path.join(
+        _storage_root(), storage_keys[0] if storage_keys else "")
 
-    if _claude_available() and os.path.exists(image_path):
-        activity.logger.info(f"Attempting AI extraction via Claude ({CLAUDE_MODEL})")
-        result = await _extract_via_claude(image_path)
-        if result is not None:
+    claude_partial = None
+    if _claude_available() and image_paths:
+        activity.logger.info(f"Attempting AI extraction via Claude ({CLAUDE_MODEL}) on {len(image_paths)} page(s)")
+        result = await _extract_via_claude(image_paths)
+        if result is not None and result.get("GrossAmount", 0) > 0:
             activity.logger.info(f"Claude extraction succeeded: {result}")
             return result
-        activity.logger.warning("Claude extraction unavailable or inconclusive; trying Textract.")
+        claude_partial = result
+        activity.logger.warning("Claude extraction unavailable or partial; trying Textract.")
+
+    # With multiple pages, single-image Textract can't beat Claude's partial
+    # answer -- it would only see page 1, where the grand total isn't.
+    if claude_partial is not None and len(image_paths) > 1:
+        return claude_partial
 
     if HAS_AWS:
-        if os.path.exists(image_path):
+        if image_paths:
             activity.logger.info("Attempting real extraction via AWS Textract AnalyzeExpense")
             # boto3 is synchronous -- run it off the event loop so a slow/blocked
             # Textract call can't stall every other activity this worker is running.
@@ -605,6 +669,11 @@ async def extract_text_and_layout(storage_key: str) -> dict:
             activity.logger.warning("Textract extraction unavailable or inconclusive; falling back.")
         else:
             activity.logger.warning(f"HAS_AWS but no file at resolved path: {image_path}; falling back.")
+
+    # A partial Claude read (header fields, no total) still beats simulation.
+    if claude_partial is not None:
+        activity.logger.info(f"Returning partial Claude extraction: {claude_partial}")
+        return claude_partial
 
     if HAS_ML and os.path.exists(image_path):
         activity.logger.info("Executing REAL LayoutLMv3 PyTorch Inference")

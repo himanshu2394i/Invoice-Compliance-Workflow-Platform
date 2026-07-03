@@ -112,10 +112,14 @@ func ValidateAgainstExpected(data InvoiceData, expected ExpectedInvoice) Validat
 		!strings.EqualFold(strings.TrimSpace(data.BuyerGSTIN), strings.TrimSpace(expected.BuyerGSTIN)) {
 		result.add("invoice_data_mismatch", fmt.Sprintf("OCR buyer GSTIN (%s) does not match selected buyer GSTIN (%s)", data.BuyerGSTIN, expected.BuyerGSTIN))
 	}
-	if expected.GrossAmount > 0 && math.Abs(data.GrossAmount-expected.GrossAmount) > amountTolerance(expected.GrossAmount) {
+	// A zero OCR amount means "not visible in the photos" (e.g. a multi-page
+	// invoice photographed without its last page, where the grand total
+	// lives), not "the total is zero" -- comparing it would flag every
+	// partial extraction as a mismatch.
+	if data.GrossAmount > 0 && expected.GrossAmount > 0 && math.Abs(data.GrossAmount-expected.GrossAmount) > amountTolerance(expected.GrossAmount) {
 		result.add("invoice_data_mismatch", fmt.Sprintf("OCR gross amount (%.2f) does not match submitted total amount (%.2f)", data.GrossAmount, expected.GrossAmount))
 	}
-	if expected.TaxAmount > 0 && math.Abs(data.TaxAmount-expected.TaxAmount) > amountTolerance(expected.GrossAmount) {
+	if data.TaxAmount > 0 && expected.TaxAmount > 0 && math.Abs(data.TaxAmount-expected.TaxAmount) > amountTolerance(expected.GrossAmount) {
 		result.add("invoice_data_mismatch", fmt.Sprintf("OCR tax amount (%.2f) does not match submitted tax amount (%.2f)", data.TaxAmount, expected.TaxAmount))
 	}
 

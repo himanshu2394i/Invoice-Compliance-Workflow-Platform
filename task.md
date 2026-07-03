@@ -270,3 +270,36 @@ typing ("it should have taken everything on its own is the whole premise").
 - Cost note: ~1 Claude call per capture preview + 1 per supporting document
   (post-hoc matching); at Opus pricing roughly Rs.2-4 per invoice bundle.
   Swap CLAUDE_EXTRACTION_MODEL env var to a cheaper model if volume grows.
+
+## Phase 15 - Multi-page extraction + gate-entry auto-population (2026-07-03)
+
+- `[x]` Multi-page invoice extraction: the capture preview now sends EVERY
+  invoice page photo in one request (repeated 'file' parts, capped at 6);
+  Claude sees all pages in a single vision call and returns one combined
+  record. Matters because Meridian invoices print the grand total on the
+  LAST page. Preview budget 20s -> 35s server-side (activity timeout 40s).
+  When no total is visible anywhere, extraction returns the header fields
+  with amounts zeroed plus a "photograph the last page" warning instead of
+  discarding everything, and validation skips amount comparison for zeroed
+  OCR amounts so partials never raise false mismatches. Live-verified against
+  real 2- and 3-page photo sets: A260000218 read gross 10913 exactly at
+  0.95 confidence in 7.6s; a 3-photo set completed in 13.3s and warned
+  honestly that the photos were of different invoices.
+- `[x]` Fixed 3+ page invoice sync: a second INVOICE_PAGE upload used to hit
+  the same-type "replacement" branch and 403 workers; each page is now its
+  own document.
+- `[x]` Gate-entry auto-population from supporting-document photos: the
+  ledger matching workflow now records accepted qty / invoice qty /
+  discrepancy amount / gate entry number+date that Claude reads off a
+  GATE_ENTRY_NOTE or GRN into gate_entry_metadata (entered_by null =
+  system; a human-entered row for the same document always wins), and
+  auto-raises the same idempotent SHORT_RECEIPT dispute the manual form
+  would. Live-verified: uploading a gate entry note photo (45 of 48
+  accepted, Rs.682 shortage) auto-created the gate entry row with the GE
+  number and ISO date and opened "Short receipt: accepted 45.00 of 48.00
+  invoiced (read from the document photo)".
+- Verified: go build/vet, workflow+validation unit tests, full
+  `go test ./internal/api` against the local stack, py_compile, all 66
+  Flutter tests, analyzer at the 26-issue baseline.
+- `[ ]` Deploy to pilot + rebuild/sideload APK (multi-page preview upload is
+  in the app; older apps keep working - the endpoint accepts 1..N files).
