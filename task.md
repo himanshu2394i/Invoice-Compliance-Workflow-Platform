@@ -249,3 +249,24 @@ typing ("it should have taken everything on its own is the whole premise").
   password from Settings, and ADMIN can reset a staff password by email.
   Backend routes are `POST /api/v1/auth/change-password` and
   `POST /api/v1/auth/users/reset-password`; both store bcrypt hashes only.
+
+## Phase 14 - Claude AI extraction live (2026-07-03)
+
+- `[x]` Claude (claude-opus-4-8, vision) is the primary extractor in the
+  ocr-worker, gated on ANTHROPIC_API_KEY. JSON is forced via structured
+  outputs (output_config.format json_schema - API-guaranteed valid JSON
+  conforming to the ai_extraction_v1 envelope). Fallback chain:
+  Claude -> Textract -> simulation. Extracts invoice number/date, GSTINs,
+  buyer name, payment type, amounts, per-field confidence, and
+  plain-language warnings.
+- `[x]` Deployed + activated on the pilot server (key in deploy/.env,
+  ocr-worker rebuilt with anthropic SDK 0.116.0). Live smoke test on a real
+  data/ photo: 14.9s, invoice number/date/buyer name at 95%+ confidence,
+  taxable amount honestly flagged unreadable (0.6, tax-inclusive totals),
+  payment type honestly reported as not printed. The app has no client-side
+  preview timeout, so the server's 20s budget governs.
+- `[ ]` Sideload the new APK (adds invoice-date/payment-type/buyer-name
+  autofill) onto the pilot device.
+- Cost note: ~1 Claude call per capture preview + 1 per supporting document
+  (post-hoc matching); at Opus pricing roughly Rs.2-4 per invoice bundle.
+  Swap CLAUDE_EXTRACTION_MODEL env var to a cheaper model if volume grows.
