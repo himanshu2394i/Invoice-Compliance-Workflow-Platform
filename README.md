@@ -1,9 +1,14 @@
 # Meridian Distributors — Invoice Capture & Distributor Ops Platform
 
 A multi-tenant invoice digitization + distributor operations system built for
-**Meridian Brothers / Meridian Distributors (Meridian Gurgaon)** — a real distribution
-business. This is an internal pilot, **not a public product** (Android only,
-sideloaded APK, no Play Store).
+a real distribution business. This is an internal pilot, **not a public
+product** (Android only, sideloaded APK, no Play Store).
+
+> **Anonymized repo.** The client's real name, GSTINs, server address, retailer
+> master data, and sample invoice photos have been stripped from this history
+> and replaced with placeholder values (`Meridian Brothers` / `Meridian
+> Distributors` / `Meridian Gurgaon`, fabricated GSTINs, a documentation-only
+> IP). Code and architecture are unchanged and real.
 
 Workers photograph invoices in the field with a phone; the backend reconciles
 them against expected purchase/buyer data and routes exceptions (short
@@ -22,7 +27,7 @@ with a full audit trail.
 | :--- | :--- |
 | **Capture (mobile)** | Camera → review screen → supporting-document checklist → offline queue → sync. Manual data entry by the worker, with **AI-assisted autofill**. Draft recovery, duplicate-invoice warning, photo quality gate (blur/lighting/framing). |
 | **AI extraction** | `Claude (Opus, vision) → AWS Textract → simulation` fallback chain in the OCR worker. Multi-page invoices (up to 6 pages), per-field confidence, plain-language warnings; fills the form at ≥0.90 confidence ("AI-filled" cue), 0.70–0.89 ("verify" cue), below that skips. |
-| **Master-data autofill** | **1,285 retailer records** extracted from 8 legacy Excel series masters (CAD / HAL0 / MORDE00 / NIV / DBR0 / IN00 / REHIN / HYGIN0) into a `master_retailers` table + JSON/CSV exports. On-device **fuzzy matching** (Levenshtein + token-set) resolves noisy OCR text to the exact seller entity, buyer, GSTIN, route, and credit terms. |
+| **Master-data autofill** | Pilot was seeded with **1,285 retailer records** extracted from 8 legacy Excel series masters into a `master_retailers` table + JSON/CSV exports (source files anonymized out of this repo). On-device **fuzzy matching** (Levenshtein + token-set) resolves noisy OCR text to the exact seller entity, buyer, GSTIN, route, and credit terms. |
 | **Camera quality** | `ResolutionPreset.max` (full sensor), 4K UHD (3840 px) at 92% JPEG, dynamic contrast + gamma for faint dot-matrix/thermal prints, touch-to-focus, flash-torch toggle. |
 | **Owner dashboard (mobile)** | Dashboard, invoice detail, disputes, gate entry, receivables with aging buckets, sales reports, alerts, approval workflows, in-app document viewer, audit trail. |
 | **Approvals & exceptions** | Manager/finance approval chains, dispute creation/resolution, buyer document requirements, admin-managed matching rules. Exceptions → alerts feed. |
@@ -78,7 +83,7 @@ mobile/                  Flutter app (Android)
   lib/core/api/          Dio client + Endpoints (one method per backend route)
   lib/core/models/       Hive offline-queue models + DTOs
 deploy/                  Production stack (docker-compose.prod.yml + Caddyfile)
-data/                    Invoice photos + master-retailer JSON/CSV exports
+data/                    (removed — real invoice photos + retailer exports, anonymized out)
 docs/                    Founder walkthrough + design specs/plans
 *.md (root)              Analysis docs, task.md, README.md, AGENTS.md
 ```

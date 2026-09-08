@@ -10,3 +10,12 @@ mobile/ios/Pods/
 *.env
 .DS_Store
 .superpowers/
+
+# real client/retailer data — never commit; see README anonymization note
+/data/
+/scratch/
+*.xlsx
+*.xls
+WhatsApp Image*.jpeg
+__pycache__/
+*.pyc
