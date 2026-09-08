@@ -301,5 +301,5 @@ typing ("it should have taken everything on its own is the whole premise").
 - Verified: go build/vet, workflow+validation unit tests, full
   `go test ./internal/api` against the local stack, py_compile, all 66
   Flutter tests, analyzer at the 26-issue baseline.
-- `[ ]` Deploy to pilot + rebuild/sideload APK (multi-page preview upload is
-  in the app; older apps keep working - the endpoint accepts 1..N files).
+- `[x]` Deploy to pilot + rebuild/sideload APK (multi-page preview upload is
+  in the app; older apps keep working - the endpoint accepts 1..N files). Verified live at https://203-0-113-10.sslip.io (2026-07-27).

@@ -9,6 +9,7 @@ import '../../core/models/buyer_requirement.dart';
 import '../../core/models/master_data.dart';
 import 'bundle_provider.dart';
 import 'camera_screen.dart'; // CameraTarget
+import 'fuzzy_match.dart';
 import 'series_detect.dart';
 
 final reviewDioProvider = Provider<Dio>((ref) => buildDio());
@@ -38,6 +39,7 @@ class InvoiceOCRPreview {
   final bool ocrAvailable;
   final String? invoiceNumber;
   final String? sellerGstin;
+  final String? sellerName;
   final String? buyerGstin;
   final double? taxableAmount;
   final double? grossAmount;
@@ -54,6 +56,7 @@ class InvoiceOCRPreview {
     required this.ocrAvailable,
     this.invoiceNumber,
     this.sellerGstin,
+    this.sellerName,
     this.buyerGstin,
     this.taxableAmount,
     this.grossAmount,
@@ -78,6 +81,7 @@ class InvoiceOCRPreview {
         ocrAvailable: json['ocr_available'] == true,
         invoiceNumber: json['invoice_number'] as String?,
         sellerGstin: json['seller_gstin'] as String?,
+        sellerName: json['seller_name'] as String?,
         buyerGstin: json['buyer_gstin'] as String?,
         taxableAmount: (json['taxable_amount'] as num?)?.toDouble(),
         grossAmount: (json['gross_amount'] as num?)?.toDouble(),
@@ -174,7 +178,6 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
   final _buyerGstinCtrl = TextEditingController();
   final _buyerNameCtrl = TextEditingController();
   final _invDateCtrl = TextEditingController();
-  final _taxableCtrl = TextEditingController();
   final _totalCtrl = TextEditingController();
 
   // Seller entity GSTIN — three entities; worker picks from dropdown
@@ -202,6 +205,9 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
   SeriesEntry? _detectedSeries;
   List<BuyerBranch> _buyerBranches = [];
   String? _selectedBranchId;
+  String? _detectedSellerGstin;
+  String? _detectedSellerName;
+  bool _acknowledgedMismatch = false;
 
   @override
   void initState() {
@@ -228,9 +234,6 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
     _buyerNameCtrl.text = session.buyerName;
     _invDateCtrl.text =
         session.invoiceDate.trim().isEmpty ? todayText : session.invoiceDate;
-    _taxableCtrl.text = session.taxableAmount == 0
-        ? ''
-        : session.taxableAmount.toStringAsFixed(2);
     _totalCtrl.text =
         session.totalAmount == 0 ? '' : session.totalAmount.toStringAsFixed(2);
     if (_entities.any((e) => e.$2 == session.entityGstin)) {
@@ -264,7 +267,29 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
   void _detectSeriesFromNumber() {
     final hit = detectSeries(_invNumCtrl.text, _seriesRegistry);
     if (hit?.id != _detectedSeries?.id && mounted) {
-      setState(() => _detectedSeries = hit);
+      setState(() {
+        _detectedSeries = hit;
+        if (hit != null) {
+          final prefix = hit.seriesPrefix.toUpperCase();
+          if (hit.entityName != null && hit.entityName!.isNotEmpty) {
+            final match = _entities
+                .where((e) => e.$1.toUpperCase() == hit.entityName!.toUpperCase())
+                .toList();
+            if (match.isNotEmpty) _entityGstin = match.first.$2;
+          } else if (prefix.startsWith('HAL')) {
+            _entityGstin = '06AAAAA0015A1ZF'; // Meridian Distributors
+          } else if (prefix.startsWith('IN') ||
+              prefix.startsWith('REH') ||
+              prefix.startsWith('HYG')) {
+            _entityGstin = '06AAAAA0017A1ZH'; // Meridian Gurgaon
+          } else if (prefix.startsWith('CAD') ||
+              prefix.startsWith('MORDE') ||
+              prefix.startsWith('NIV') ||
+              prefix.startsWith('DBR')) {
+            _entityGstin = '06AAAAA0003A1Z3'; // Meridian Brothers
+          }
+        }
+      });
     }
   }
 
@@ -390,12 +415,26 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
         'invoice number',
       );
       final sellerGSTIN = data.sellerGstin?.trim();
-      if (sellerGSTIN != null &&
-          sellerGSTIN.isNotEmpty &&
-          data.shouldFill('seller_gstin')) {
+      final sellerName = data.sellerName?.trim();
+      if (sellerGSTIN != null && sellerGSTIN.isNotEmpty) {
+        _detectedSellerGstin = sellerGSTIN;
         final match = _entities.where((e) => e.$2 == sellerGSTIN).toList();
-        if (match.isNotEmpty) _entityGstin = match.first.$2;
+        if (match.isNotEmpty) {
+          _detectedSellerName = match.first.$1;
+        }
+      } else if (sellerName != null && sellerName.isNotEmpty) {
+        _detectedSellerName = sellerName;
+        final matchedEntity = FuzzyMatch.findBestMatch(
+          sellerName,
+          _entities,
+          (e) => e.$1,
+          minScore: 0.50,
+        );
+        if (matchedEntity != null) {
+          _detectedSellerGstin = matchedEntity.$2;
+        }
       }
+
       final extractedBuyerGSTIN = data.buyerGstin?.trim();
       final existingBuyerGSTIN = _buyerGstinCtrl.text.trim();
       if (extractedBuyerGSTIN != null && extractedBuyerGSTIN.isNotEmpty) {
@@ -416,10 +455,6 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
             extractedBuyerGSTIN.toUpperCase()) {
           _ocrWarning = 'Buyer GSTIN from photo differs. Check the invoice.';
         }
-      }
-      if (_taxableCtrl.text.trim().isEmpty && data.taxableAmount != null) {
-        fillIfEmpty(_taxableCtrl, data.taxableAmount!.toStringAsFixed(2),
-            'taxable_amount', 'taxable amount');
       }
       if (_totalCtrl.text.trim().isEmpty && data.grossAmount != null) {
         fillIfEmpty(_totalCtrl, data.grossAmount!.toStringAsFixed(2),
@@ -457,9 +492,29 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
         filled.add('payment type (${aiPaymentType.toLowerCase()})');
       }
 
-      // Buyer name, only when GSTIN lookup didn't already resolve one.
-      if (_buyerNameCtrl.text.trim().isEmpty) {
-        fillIfEmpty(_buyerNameCtrl, data.buyerName, 'buyer_name', 'buyer name');
+      // Buyer name, fuzzy match OCR string against known master buyer list.
+      final extractedBuyerName = data.buyerName?.trim();
+      if (extractedBuyerName != null && extractedBuyerName.isNotEmpty) {
+        final matchedBuyer = _buyers.isNotEmpty
+            ? FuzzyMatch.findBestMatch(
+                extractedBuyerName,
+                _buyers,
+                (b) => b.name,
+                minScore: 0.50,
+              )
+            : null;
+
+        if (matchedBuyer != null) {
+          _buyerNameCtrl.text = matchedBuyer.name;
+          _buyerGstinCtrl.text = matchedBuyer.gstin;
+          _selectBuyer(matchedBuyer);
+          filled.add('buyer name (${matchedBuyer.name})');
+          filledFields.add('buyer_name');
+        } else if (_buyerNameCtrl.text.trim().isEmpty) {
+          _buyerNameCtrl.text = extractedBuyerName;
+          filled.add('buyer name');
+          filledFields.add('buyer_name');
+        }
       }
       if (mounted) {
         setState(() {
@@ -497,7 +552,6 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
     _buyerGstinCtrl.dispose();
     _buyerNameCtrl.dispose();
     _invDateCtrl.dispose();
-    _taxableCtrl.dispose();
     _totalCtrl.dispose();
     _termsCtrl.dispose();
     super.dispose();
@@ -524,6 +578,7 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
   }
 
   void _persistDraftFields() {
+    final total = double.tryParse(_totalCtrl.text) ?? 0;
     final terms = int.tryParse(_termsCtrl.text.trim());
     ref.read(bundleProvider.notifier).updateInvoiceFields(
           invoiceNumber: _invNumCtrl.text.trim(),
@@ -531,8 +586,8 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
           buyerGstin: _buyerGstinCtrl.text.trim().toUpperCase(),
           buyerName: _buyerNameCtrl.text.trim(),
           invoiceDate: _invDateCtrl.text.trim(),
-          taxableAmount: double.tryParse(_taxableCtrl.text) ?? 0,
-          totalAmount: double.tryParse(_totalCtrl.text) ?? 0,
+          taxableAmount: total,
+          totalAmount: total,
           paymentType: _paymentType,
           paymentTermsDays: _paymentType == 'CREDIT' ? terms : null,
           clearPaymentTerms: _paymentType != 'CREDIT' || terms == null,
@@ -833,8 +888,98 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
                       const SizedBox(height: 16),
                     ],
 
+                    // Seller Entity Verification Mismatch Alert
+                    if (_detectedSellerGstin != null &&
+                        _detectedSellerGstin!.isNotEmpty &&
+                        _entityGstin != _detectedSellerGstin &&
+                        !_acknowledgedMismatch) ...[
+                      Container(
+                        padding: const EdgeInsets.all(14),
+                        margin: const EdgeInsets.only(bottom: 12),
+                        decoration: BoxDecoration(
+                          color: Colors.amber.shade50,
+                          border: Border.all(color: Colors.amber.shade800, width: 1.5),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(Icons.warning_amber_rounded,
+                                    color: Colors.amber.shade900, size: 24),
+                                const SizedBox(width: 8),
+                                const Text(
+                                  'Seller Entity Mismatch Detected!',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 15,
+                                    color: Color(0xFF7A4300),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Selected: ${_entities.firstWhere((e) => e.$2 == _entityGstin, orElse: () => ('Unknown', _entityGstin)).$1}\n'
+                              'Detected on Invoice: ${_entities.firstWhere((e) => e.$2 == _detectedSellerGstin, orElse: () => (_detectedSellerName ?? 'Detected Entity', _detectedSellerGstin!)).$1}',
+                              style: const TextStyle(fontSize: 13, height: 1.4),
+                            ),
+                            const SizedBox(height: 12),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: [
+                                FilledButton.icon(
+                                  style: FilledButton.styleFrom(
+                                      backgroundColor: const Color(0xFF1A237E)),
+                                  onPressed: () {
+                                    setState(() {
+                                      _entityGstin = _detectedSellerGstin!;
+                                      _acknowledgedMismatch = true;
+                                    });
+                                    _persistDraftFields();
+                                  },
+                                  icon: const Icon(Icons.swap_horiz, size: 18),
+                                  label: Text(
+                                    'Switch to ${_entities.firstWhere((e) => e.$2 == _detectedSellerGstin, orElse: () => ('Detected', '')).$1}',
+                                    style: const TextStyle(fontSize: 13),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                OutlinedButton(
+                                  onPressed: () {
+                                    setState(() => _acknowledgedMismatch = true);
+                                  },
+                                  child: const Text('Continue'),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ] else if (_detectedSellerGstin != null &&
+                        _detectedSellerGstin!.isNotEmpty &&
+                        _entityGstin == _detectedSellerGstin) ...[
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Chip(
+                          avatar: const Icon(Icons.check_circle,
+                              color: Colors.green, size: 18),
+                          label: Text(
+                            'Verified Entity: ${_entities.firstWhere((e) => e.$2 == _entityGstin, orElse: () => ('Entity', '')).$1}',
+                            style: const TextStyle(
+                                color: Colors.green, fontWeight: FontWeight.bold),
+                          ),
+                          backgroundColor: Colors.green.shade50,
+                          side: BorderSide(color: Colors.green.shade200),
+                        ),
+                      ),
+                    ],
+
                     // Seller entity
                     DropdownButtonFormField<String>(
+                      isExpanded: true,
                       value: _entityGstin,
                       decoration: const InputDecoration(
                         labelText: 'Seller Entity',
@@ -1041,49 +1186,21 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
                     ),
                     const SizedBox(height: 12),
 
-                    Row(
-                      children: [
-                        Expanded(
-                          child: _field(
-                            ctrl: _taxableCtrl,
-                            label: 'Taxable Amount (₹)',
-                            keyboardType: const TextInputType.numberWithOptions(
-                                decimal: true),
-                            ocrFieldKey: 'taxable_amount',
-                            validator: (v) {
-                              if (v == null || v.isEmpty) return 'Required';
-                              final taxable = double.tryParse(v);
-                              if (taxable == null) return 'Must be a number';
-                              final total = double.tryParse(_totalCtrl.text);
-                              if (total != null && total < taxable) {
-                                return 'Cannot exceed total';
-                              }
-                              return null;
-                            },
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: _field(
-                            ctrl: _totalCtrl,
-                            label: 'Total Amount (₹)',
-                            keyboardType: const TextInputType.numberWithOptions(
-                                decimal: true),
-                            ocrFieldKey: 'gross_amount',
-                            validator: (v) {
-                              if (v == null || v.isEmpty) return 'Required';
-                              final total = double.tryParse(v);
-                              if (total == null) return 'Must be a number';
-                              final taxable =
-                                  double.tryParse(_taxableCtrl.text);
-                              if (taxable != null && total < taxable) {
-                                return 'Must be at least taxable';
-                              }
-                              return null;
-                            },
-                          ),
-                        ),
-                      ],
+                    _field(
+                      ctrl: _totalCtrl,
+                      label: 'Net Bill Amount (₹)',
+                      hint: '10913.00',
+                      keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true),
+                      ocrFieldKey: 'gross_amount',
+                      validator: (v) {
+                        if (v == null || v.isEmpty) return 'Required';
+                        final total = double.tryParse(v);
+                        if (total == null || total <= 0) {
+                          return 'Must be a positive amount';
+                        }
+                        return null;
+                      },
                     ),
                     const SizedBox(height: 24),
 

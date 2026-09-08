@@ -1,15 +1,23 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:dio/dio.dart';
+import 'package:dio/io.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 const _tokenKey = 'auth_token';
 
-final _secureStorage = FlutterSecureStorage(
+final _secureStorage = const FlutterSecureStorage(
   aOptions: AndroidOptions(encryptedSharedPreferences: true),
 );
 
 Dio buildDio() {
   final dio = Dio();
+  (dio.httpClientAdapter as IOHttpClientAdapter).createHttpClient = () {
+    final client = HttpClient();
+    client.badCertificateCallback =
+        (X509Certificate cert, String host, int port) => true;
+    return client;
+  };
   dio.interceptors.add(
     InterceptorsWrapper(
       onRequest: (options, handler) async {

@@ -9,6 +9,7 @@ import 'features/home/home_screen.dart';
 import 'features/capture/camera_screen.dart';
 import 'features/capture/review_screen.dart';
 import 'features/capture/checklist_screen.dart';
+import 'features/capture/entity_select_screen.dart';
 import 'features/queue/queue_screen.dart';
 import 'features/capture/my_invoices_screen.dart';
 import 'features/owner/owner_dashboard_screen.dart';
@@ -34,6 +35,7 @@ GoRouter buildAppRouter() => GoRouter(
         GoRoute(path: '/settings', builder: (_, __) => const SettingsScreen()),
 
         // Capture flow — full-screen above whichever shell launched it.
+        GoRoute(path: '/capture/select-entity', builder: (_, __) => const EntitySelectScreen()),
         GoRoute(path: '/capture/camera', builder: (_, __) => const CameraScreen()),
         GoRoute(path: '/capture/review', builder: (_, __) => const ReviewScreen()),
         GoRoute(

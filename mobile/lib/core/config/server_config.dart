@@ -4,7 +4,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 /// restarts via encrypted secure storage. Change it from the Settings screen.
 class ServerConfig {
   static const _key = 'server_base_url';
-  static const defaultUrl = 'https://203-0-113-10.sslip.io';
+  static const defaultUrl = 'https://203.0.113.10';
 
   static final _storage = const FlutterSecureStorage(
     aOptions: AndroidOptions(encryptedSharedPreferences: true),
@@ -17,7 +17,13 @@ class ServerConfig {
 
   /// Load persisted URL from storage. Call once before runApp.
   static Future<void> load() async {
-    _baseUrl = await _storage.read(key: _key) ?? defaultUrl;
+    final saved = await _storage.read(key: _key);
+    if (saved == null || saved.contains('sslip.io') || saved.contains('10.0.2.2')) {
+      _baseUrl = defaultUrl;
+      await _storage.write(key: _key, value: defaultUrl);
+    } else {
+      _baseUrl = saved;
+    }
   }
 
   /// Persist a new URL and update the in-memory value immediately.

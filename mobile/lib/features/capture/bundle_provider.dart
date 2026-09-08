@@ -168,6 +168,11 @@ class CaptureSession {
 class BundleNotifier extends StateNotifier<CaptureSession> {
   BundleNotifier() : super(CaptureSession(sessionId: _uuid.v4()));
 
+  void setPreselectedEntityGstin(String gstin) {
+    state = state.copyWith(entityGstin: gstin);
+    _persistDraft();
+  }
+
   void reset({bool clearDraft = true}) {
     state = CaptureSession(sessionId: _uuid.v4());
     if (clearDraft) unawaited(HiveService.clearCaptureDraft());

@@ -99,18 +99,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 const SizedBox(height: 24),
               ],
               FilledButton.icon(
-                onPressed: () {
-                  // Reset any previous session
-                  ref.read(bundleProvider.notifier).reset();
-                  context.push(
-                    '/capture/camera',
-                    extra: const CameraTarget(
-                      documentType: 'INVOICE',
-                      label: 'Tax Invoice',
-                      isPrimary: true,
-                    ),
-                  );
-                },
+                onPressed: () => _showEntitySelectionModal(context),
                 icon: const Icon(Icons.camera_alt, size: 28),
                 label: const Text('Capture Invoice',
                     style: TextStyle(fontSize: 18)),
@@ -120,6 +109,74 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  void _showEntitySelectionModal(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      useRootNavigator: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => Container(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Row(
+              children: [
+                Icon(Icons.business, color: Color(0xFF1A237E), size: 28),
+                SizedBox(width: 12),
+                Text(
+                  'Select Billing Seller Entity',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Choose the seller entity issuing this invoice:',
+              style: TextStyle(color: Colors.grey[600]),
+            ),
+            const SizedBox(height: 20),
+            for (final entity in [
+              ('Meridian Brothers', '06AAAAA0003A1Z3'),
+              ('Meridian Distributors', '06AAAAA0008A1Z8'),
+              ('Meridian Gurgaon', '06AAAAA0001A1Z1'),
+            ])
+              Card(
+                elevation: 2,
+                margin: const EdgeInsets.only(bottom: 12),
+                child: ListTile(
+                  leading: const Icon(Icons.store, color: Color(0xFF1A237E)),
+                  title: Text(
+                    entity.$1,
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  subtitle: Text('GSTIN: ${entity.$2}'),
+                  trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                  onTap: () {
+                    Navigator.pop(context);
+                    ref.read(bundleProvider.notifier).reset();
+                    ref
+                        .read(bundleProvider.notifier)
+                        .setPreselectedEntityGstin(entity.$2);
+                    context.push(
+                      '/capture/camera',
+                      extra: const CameraTarget(
+                        documentType: 'INVOICE',
+                        label: 'Tax Invoice',
+                        isPrimary: true,
+                      ),
+                    );
+                  },
+                ),
+              ),
+          ],
         ),
       ),
     );

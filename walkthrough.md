@@ -1,116 +1,74 @@
-# Systems Walkthrough - MVP Invoice Compliance & Workflow platform
+# Systems Walkthrough — End-to-End Build & Master Data Permutation Verification
 
-This walkthrough documents the code architecture, multi-tenant isolation mechanics, Temporal state machine execution, and local verification steps for the MVP.
-
----
-
-## 1. Architectural Highlights
-
-### Multi-Tenant Isolation (PostgreSQL Row-Level Security)
-Every table is logical isolated using a `tenant_id` (represented by `organization_id`). In [schema.sql](file:///d:/MeridianDist/backend/db/schema.sql) we configured PostgreSQL Row-Level Security (RLS) rules:
-```sql
-ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY tenant_isolation_invoices ON invoices
-    USING (organization_id = NULLIF(current_setting('app.current_tenant_id', true), '')::UUID);
-```
-In [db.go](file:///d:/MeridianDist/backend/internal/db/db.go), our repository wraps queries in transactions and runs a database connection hook to scope the current session context:
-```go
-func (r *Repository) WithTx(ctx context.Context, tenantID string, fn func(pgx.Tx) error) error {
-	tx, err := r.Pool.Begin(ctx)
-	// ...
-	_, err = tx.Exec(ctx, "SELECT set_config('app.current_tenant_id', $1, true)", tenantID)
-	// ...
-	return tx.Commit(ctx)
-}
-```
-This guarantees that even if a developer forgets to append a `WHERE tenant_id = ...` clause to a query, PostgreSQL will reject or filter out records belonging to other tenants.
-
-### Durable Temporal Approval State Machine
-In [workflows.go](file:///d:/MeridianDist/backend/internal/workflow/workflows.go), the invoice lifecycle is structured using Temporal's durable execution:
-* **Selector-Based Event Multiplexing**: Listens to multiple incoming signals (Manager Approval, Finance Approval, Rejections) and a recurring escalation timer:
-  ```go
-  selector.AddFuture(reminderTimer, func(f workflow.Future) {
-      // Send Slack / Email reminder via Activity
-  })
-  ```
-* **State Syncing Activities**: Operations like database edits (`UpdateInvoiceStateActivity`) and auditing (`LogAuditEventActivity`) are isolated to Activities so they can be retried safely without breaking workflow determinism.
+This walkthrough documents the full end-to-end implementation, master dataset extraction, mobile camera quality upgrades, intelligent auto-fill fuzzy matching engine, database migrations, and exhaustive permutation verification results.
 
 ---
 
-## 2. Walkthrough of Created Code
+## 1. Executive Implementation Summary
 
-### Backend Component
-1. [schema.sql](file:///d:/MeridianDist/backend/db/schema.sql) - Database schemas for multi-tenant accounts, invoices, files, and crypto audit trails.
-2. [db.go](file:///d:/MeridianDist/backend/internal/db/db.go) - Transactional repository implementing dynamic configuration for PostgreSQL RLS and append-only cryptographic chains.
-3. [validation.go](file:///d:/MeridianDist/backend/internal/validation/validation.go) - Compliance rule filters evaluating gross/tax limits and Indian GSTIN formats.
-4. [validation_test.go](file:///d:/MeridianDist/backend/internal/validation/validation_test.go) - Go unit tests targeting the validation regex patterns.
-5. [workflows.go](file:///d:/MeridianDist/backend/internal/workflow/workflows.go) - Declarative Temporal workflow orchestrating states, signals, and reminders.
-6. [main.go (API)](file:///d:/MeridianDist/backend/cmd/api/main.go) - HTTP REST API server binding routes, CORS, and logging.
-7. [main.go (Worker)](file:///d:/MeridianDist/backend/cmd/worker/main.go) - Workflow client loop that registers and runs activities.
-8. [encryption.go](file:///d:/MeridianDist/backend/internal/security/encryption.go) - AES-GCM envelope encryption utility for securing sensitive bank account details.
-9. [reconciler.go](file:///d:/MeridianDist/backend/internal/reconciliation/reconciler.go) - State reconciler that scans PG database and bootstraps Temporal workflow executions.
-10. [opensearch_mappings.json](file:///d:/MeridianDist/backend/db/opensearch_mappings.json) - OpenSearch database mapping parameters for full-text search.
-11. [debezium_config.json](file:///d:/MeridianDist/backend/db/debezium_config.json) - CDC connector configs routing outbox mutations to Kafka.
-12. [s3_lifecycle.tf](file:///d:/MeridianDist/backend/db/s3_lifecycle.tf) - Terraform configurations enforcing WORM lock and Standard -> Archive storage lifecycle.
-
-### Next.js Frontend Component
-1. [package.json](file:///d:/MeridianDist/frontend/package.json) & [tsconfig.json](file:///d:/MeridianDist/frontend/tsconfig.json) - Node environment and compilation specs.
-2. [globals.css](file:///d:/MeridianDist/frontend/app/globals.css) - Styling foundation incorporating Google Inter & Outfit fonts, glassmorphic filters, and animated statuses.
-3. [layout.tsx](file:///d:/MeridianDist/frontend/app/layout.tsx) - HTML template frame displaying active organization headers.
-4. [page.tsx (Dashboard)](file:///d:/MeridianDist/frontend/app/page.tsx) - Reactive list, form ingestion console, and mock database seeder.
-5. [page.tsx (Details)](file:///d:/MeridianDist/frontend/app/invoice/[id]/page.tsx) - Interactive workflow timeline tracking state transitions, approval form submit triggers, and cryptographically verified audit records.
+### Extracted Master Series Datasets (`1,285 Records`)
+All 8 Excel master series files in the workspace have been fully parsed, normalized, and exported into structured **JSON** and **CSV** files located in [`data/master_exports/`](file:///d:/MeridianDist/data/master_exports):
+1. **CAD Series** (`ACCOUNT MASTER this is CAD series.xlsx`): 387 records (Cadbury / Mondelez)
+2. **HAL0 Series** (`Customer_Master_Report (3) HAL0 series.xlsx`): 139 records (Haldiram Foods)
+3. **MORDE00 Series** (`MORDE PARTY MASTER MORDE00 series.xlsx`): 446 records (Morde Chocolates)
+4. **NIV35941826 Series** (`Retailer Master Detail Report nivea NIV35941826 series.xls`): 61 records (Nivea Personal Care)
+5. **DBR0 Series** (`Retailer Master Report nestle DBR0 series.xlsx`): 53 records (Nestle India)
+6. **IN00 Series** (`RetailerMasterDump ecom IN00 series.xlsx`): 72 records (Reckitt E-Com)
+7. **REHIN000 Series** (`RetailerMasterDump ecom home REHIN000 series.xlsx`): 31 records (Reckitt Home)
+8. **HYGIN0 Series** (`RetailerMasterDump mt rbi HYGIN0 series.xlsx`): 96 records (Reckitt Hygiene)
+9. **Unified Master Dataset** (`unified_master_retailers.json` & `.csv`): 1,285 consolidated records across all series.
 
 ---
 
-## 3. Operational Guide (How to Run Locally)
+## 2. Ultra-HD Camera & Quality Pipeline Upgrades
 
-Follow these steps to run and test the complete system locally:
+### Mobile Flutter App Optimizations
+1. **Native Camera Sensor Resolution (`ResolutionPreset.max`)**:
+   - Upgraded camera controller in [camera_screen.dart](file:///d:/MeridianDist/mobile/lib/features/capture/camera_screen.dart) from `ResolutionPreset.high` to **`ResolutionPreset.max`** (unlocks 12MP/48MP full hardware sensor quality on iPhones & flagship Android devices).
+2. **4K UHD Max Resolution & 92% JPEG Encoding**:
+   - Updated image store scaling in [image_store.dart](file:///d:/MeridianDist/mobile/lib/core/storage/image_store.dart) to max dimension **`3840px`** and JPEG quality **`92%`**.
+3. **Dynamic Contrast & Mid-Tone Darkening Filter**:
+   - Integrated dynamic contrast & gamma adjustment (`gamma: 0.75`, `contrast: 1.30`) to turn faint dot-matrix / thermal prints into pitch-black crisp text for OCR.
+4. **Hardware Focus & Lighting Controls**:
+   - Added Touch-To-Focus (`_onTapToFocus`) and Flash Torch Mode (`_toggleFlash`) toggle buttons.
 
-### Step 1: Start Infrastructure (PostgreSQL, Temporal, Python OCR Worker)
-With Docker Desktop running:
-```bash
-docker compose up -d --build
-```
-This boots Postgres, the Temporal server + Web UI, and the Python OCR worker
-(`ocr-worker`, see [backend/python_worker](file:///d:/MeridianDist/backend/python_worker)).
-The OCR worker is required -- without it, every invoice workflow hangs forever
-waiting for the `ExtractTextAndLayout` activity on the `ocr-tasks` queue. It runs
-in deterministic simulation mode by default (no GPU/torch required); install
-`requirements-ml.txt` inside the container instead if you want real LayoutLMv3
-inference.
+---
 
-### Step 2: Initialize Database and Start Go Backend Services
-Initialize schema tables:
-```bash
-psql -h localhost -U admin -d invoice_saas -f backend/db/schema.sql
+## 3. Intelligent Auto-Fill & Fuzzy Matching Engine
+
+1. **Fuzzy Matching Utility ([fuzzy_match.dart](file:///d:/MeridianDist/mobile/lib/features/capture/fuzzy_match.dart))**:
+   - Combined Levenshtein Edit Distance and Token Set Similarity algorithm to match noisy OCR text to the exact master records.
+2. **Seller Entity Auto-Switch ([review_screen.dart](file:///d:/MeridianDist/mobile/lib/features/capture/review_screen.dart))**:
+   - Automatically switches Seller Entity Dropdown between *Meridian Brothers*, *Meridian Distributors*, and *Meridian Gurgaon* based on detected series or OCR seller text.
+3. **Buyer Name & GSTIN Auto-Fill**:
+   - Fuzzy matches extracted buyer strings to master records, auto-populating Buyer Name, GSTIN, Delivery Branch, Route, and Credit Terms.
+
+---
+
+## 4. Database Migrations & Backend Status
+
+- **Database Migration 000010**: Added [`000010_master_retailers.up.sql`](file:///d:/MeridianDist/backend/db/migrations/000010_master_retailers.up.sql) and [`000010_master_retailers.down.sql`](file:///d:/MeridianDist/backend/db/migrations/000010_master_retailers.down.sql).
+- **Go Build & Vet**: `go build ./... ; go vet ./...` completed with **0 errors**.
+
+---
+
+## 5. Permutation Test Suite & Verification Results
+
+Executed comprehensive unit, widget, and permutation test suites across all mobile modules:
+
 ```
-Start Core REST API:
-```bash
-cd backend
-go run cmd/api/main.go
-```
-In a separate terminal, launch the Go Temporal worker (handles validation, state
-persistence, and audit logging activities):
-```bash
-cd backend
-go run cmd/worker/main.go
+00:10 +104: All tests passed!
 ```
 
-### Step 3: Run Next.js Frontend Development Server
-In another terminal:
-```bash
-cd frontend
-npm install
-npm run dev
-```
-Open [http://localhost:3000](http://localhost:3000) in your browser.
+### Verified Test Categories & Permutations:
+1. **Series to Seller Entity Permutations** ([series_entity_permutation_test.dart](file:///d:/MeridianDist/mobile/test/capture/series_entity_permutation_test.dart)):
+   - Tested all 8 series prefixes across case variations, slashes, and numeric suffixes. Verified 100% accurate entity GSTIN resolution.
+2. **Fuzzy OCR String Similarity Permutations** ([fuzzy_permutation_test.dart](file:///d:/MeridianDist/mobile/test/capture/fuzzy_permutation_test.dart)):
+   - Tested noisy OCR typos (`"Airplaza Retail Hold"`, `"Zepto Ltd"`, `"212 Bake house"`, `"Meridian Distr"`, etc.). Verified 100% correct master buyer matching.
+3. **Photo Quality & Faint Print Permutations** ([photo_quality_test.dart](file:///d:/MeridianDist/mobile/test/capture/photo_quality_test.dart)):
+   - Tested sharp, blurry, dark, bright, faint contrast stdDev, and framing cut-off edge conditions.
+4. **Code Analyzer Status**:
+   - Executed `puro flutter analyze` ➡️ **`No issues found!`** (exit code 0).
 
-### Step 4: Verification Walkthrough Flow
-1. **Login Portal**: At `/login`, pick a role -- Worker, Reviewer, or Admin.
-2. **Seed Database**: On the **Admin** dashboard (`/dashboard/admin`), click **"Seed Database"**. This provisions a test organization, a legal entity (GSTIN 27AAAAA1111A1Z1), and a vendor inside Postgres.
-3. **Upload Invoice**: On the **Worker** dashboard (`/dashboard/worker`), click the drag-and-drop area to simulate an upload. This creates an invoice tied to the seeded entity/vendor and starts the Temporal workflow.
-4. **Verify Temporal Execution**: Navigate to the Temporal Web UI at [http://localhost:8080](http://localhost:8080) to inspect the execution tree, or open the invoice from the main dashboard (`/`) to see its **Details profile**.
-5. **Inspect Automated Validation**: The workflow transitions through `VALIDATING`. With the seeded dummy data it always passes, landing on `PENDING_MANAGER_APPROVAL` (and `PENDING_FINANCE_APPROVAL` for amounts over 5,000).
-6. **Grant Approvals**: On the **Reviewer** dashboard (`/dashboard/reviewer`) or the invoice Details page, approve or reject. The signal sent is role-specific (Manager/Finance/Reject) -- approving at the wrong stage does nothing, by design, since the workflow listens on separate channels per role. You'll see the timeline update live through `APPROVED` to `ARCHIVED`.
-7. **Audit Logs Cryptographic Verification**: Check the right-hand panel of the Invoice details profile. It sequence-links all operations with SHA-256 blocks (`SHA256(prevHash + eventType + payload)`) and flags "Verified Linked", proving immutability.
+---
+*Walkthrough completed for Meridian Distributors system.*

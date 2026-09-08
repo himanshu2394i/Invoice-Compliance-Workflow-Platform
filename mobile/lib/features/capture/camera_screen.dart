@@ -15,10 +15,8 @@ class CameraTarget {
   final String documentType;
   final String label;
   final bool isPrimary;
-  final int
-      pageNumber; // 1-based; > 1 means this is an additional page of an existing doc type
-  final int?
-      replaceIndex; // primary invoice only: retake an existing page instead of adding a new one
+  final int pageNumber; // 1-based; > 1 means this is an additional page of an existing doc type
+  final int? replaceIndex; // primary invoice only: retake an existing page instead of adding a new one
 
   const CameraTarget({
     required this.documentType,
@@ -41,6 +39,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
   CameraController? _controller;
   bool _isCapturing = false;
   String? _errorMessage;
+  FlashMode _flashMode = FlashMode.off;
 
   @override
   void initState() {
@@ -83,17 +82,46 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       (c) => c.lensDirection == CameraLensDirection.back,
       orElse: () => cameras.first,
     );
+    // ResolutionPreset.max unlocks native full sensor photo quality (12MP/48MP)
     final controller = CameraController(
       camera,
-      ResolutionPreset.high,
+      ResolutionPreset.max,
       enableAudio: false,
     );
     try {
       await controller.initialize();
+      await controller.setFlashMode(_flashMode);
       if (mounted) setState(() => _controller = controller);
     } catch (e) {
       setState(() => _errorMessage = 'Failed to initialize camera: $e');
     }
+  }
+
+  Future<void> _toggleFlash() async {
+    if (_controller == null || !_controller!.value.isInitialized) return;
+    final nextMode = switch (_flashMode) {
+      FlashMode.off => FlashMode.auto,
+      FlashMode.auto => FlashMode.torch,
+      _ => FlashMode.off,
+    };
+    try {
+      await _controller!.setFlashMode(nextMode);
+      setState(() => _flashMode = nextMode);
+    } catch (_) {}
+  }
+
+  Future<void> _onTapToFocus(TapDownDetails details, BoxConstraints constraints) async {
+    if (_controller == null || !_controller!.value.isInitialized) return;
+    final offset = Offset(
+      details.localPosition.dx / constraints.maxWidth,
+      details.localPosition.dy / constraints.maxHeight,
+    );
+    try {
+      await _controller!.setFocusPoint(offset);
+      await _controller!.setFocusMode(FocusMode.auto);
+      await _controller!.setExposurePoint(offset);
+      await _controller!.setExposureMode(ExposureMode.auto);
+    } catch (_) {}
   }
 
   Future<void> _capture() async {
@@ -234,6 +262,20 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
             backgroundColor: Colors.black,
             foregroundColor: Colors.white,
             title: Text(label),
+            actions: [
+              IconButton(
+                icon: Icon(
+                  switch (_flashMode) {
+                    FlashMode.torch => Icons.flash_on,
+                    FlashMode.auto => Icons.flash_auto,
+                    _ => Icons.flash_off,
+                  },
+                  color: _flashMode == FlashMode.off ? Colors.white54 : Colors.amber,
+                ),
+                onPressed: _toggleFlash,
+                tooltip: 'Toggle Flash',
+              ),
+            ],
           ),
           body: _errorMessage != null
               ? Center(
@@ -262,53 +304,59 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
               : _controller == null || !_controller!.value.isInitialized
                   ? const Center(
                       child: CircularProgressIndicator(color: Colors.white))
-                  : Stack(
-                      children: [
-                        SizedBox.expand(
-                          child: FittedBox(
-                            fit: BoxFit.cover,
-                            child: SizedBox(
-                              width: _controller!.value.previewSize!.height,
-                              height: _controller!.value.previewSize!.width,
-                              child: CameraPreview(_controller!),
-                            ),
-                          ),
-                        ),
-                        Positioned(
-                          bottom: 48,
-                          left: 0,
-                          right: 0,
-                          child: Center(
-                            child: GestureDetector(
-                              onTap: _capture,
-                              child: Container(
-                                width: 72,
-                                height: 72,
-                                decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  border:
-                                      Border.all(color: Colors.white, width: 4),
+                  : LayoutBuilder(
+                      builder: (context, constraints) => GestureDetector(
+                        onTapDown: (details) => _onTapToFocus(details, constraints),
+                        behavior: HitTestBehavior.opaque,
+                        child: Stack(
+                          children: [
+                            SizedBox.expand(
+                              child: FittedBox(
+                                fit: BoxFit.cover,
+                                child: SizedBox(
+                                  width: _controller!.value.previewSize!.height,
+                                  height: _controller!.value.previewSize!.width,
+                                  child: CameraPreview(_controller!),
                                 ),
-                                child: _isCapturing
-                                    ? const Padding(
-                                        padding: EdgeInsets.all(16),
-                                        child: CircularProgressIndicator(
-                                            color: Colors.white,
-                                            strokeWidth: 2),
-                                      )
-                                    : const Icon(Icons.camera_alt,
-                                        color: Colors.white, size: 32),
                               ),
                             ),
-                          ),
+                            Positioned(
+                              bottom: 48,
+                              left: 0,
+                              right: 0,
+                              child: Center(
+                                child: GestureDetector(
+                                  onTap: _capture,
+                                  child: Container(
+                                    width: 72,
+                                    height: 72,
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      border: Border.all(
+                                          color: Colors.white, width: 4),
+                                    ),
+                                    child: _isCapturing
+                                        ? const Padding(
+                                            padding: EdgeInsets.all(16),
+                                            child: CircularProgressIndicator(
+                                                color: Colors.white,
+                                                strokeWidth: 2),
+                                          )
+                                        : const Icon(Icons.camera_alt,
+                                            color: Colors.white, size: 32),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            // Corner crop guides
+                            Positioned.fill(
+                              child: IgnorePointer(
+                                child: CustomPaint(painter: _CropGuidePainter()),
+                              ),
+                            ),
+                          ],
                         ),
-                        // Corner crop guides
-                        Positioned.fill(
-                          child: IgnorePointer(
-                            child: CustomPaint(painter: _CropGuidePainter()),
-                          ),
-                        ),
-                      ],
+                      ),
                     ),
         ),
       ),

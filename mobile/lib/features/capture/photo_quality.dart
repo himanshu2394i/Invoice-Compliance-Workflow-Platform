@@ -87,6 +87,14 @@ class PhotoQualityService {
       ));
     }
 
+    final contrastStdDev = _stdDev(gray, brightness);
+    if (contrastStdDev < 26.0 && brightness > 130.0) {
+      issues.add(const PhotoQualityIssue(
+        code: 'faint',
+        message: 'Print is faint/low contrast — auto-contrast enhancement active',
+      ));
+    }
+
     if (_hasFramingIssue(bounds, sample.width, sample.height, contentCoverage)) {
       issues.add(const PhotoQualityIssue(
         code: 'framing',
@@ -131,6 +139,16 @@ class PhotoQualityService {
       sum += value;
     }
     return sum / values.length;
+  }
+
+  static double _stdDev(List<double> values, double mean) {
+    if (values.isEmpty) return 0;
+    var sum = 0.0;
+    for (final v in values) {
+      final delta = v - mean;
+      sum += delta * delta;
+    }
+    return math.sqrt(sum / values.length);
   }
 
   static double _laplacianVariance(List<double> gray, int width, int height) {

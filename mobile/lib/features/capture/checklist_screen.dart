@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import '../../core/models/bundle.dart';
 import '../../core/storage/hive_service.dart';
 import 'bundle_provider.dart';
 import 'camera_screen.dart';

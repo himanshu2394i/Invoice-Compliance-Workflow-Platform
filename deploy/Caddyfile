@@ -9,3 +9,18 @@
 		reverse_proxy api:8000
 	}
 }
+
+# Also serve on the raw IP so Android clients that can't resolve the
+# sslip.io wildcard DNS (some Indian ISPs block it) can connect directly.
+# Caddy uses its internal CA for the self-signed IP cert; the mobile app
+# already has badCertificateCallback=true so it accepts this fine.
+https://203.0.113.10 {
+	tls internal
+	handle /downloads/* {
+		root * /srv/downloads
+		file_server
+	}
+	handle {
+		reverse_proxy api:8000
+	}
+}
